@@ -1,0 +1,648 @@
+const { EmbedBuilder } = require('discord.js');
+const { formatDuration } = require('../utils/format');
+const {
+  BTN_INFINITE,
+  BTN_PAUSE_RESUME,
+  BTN_PREVIOUS,
+  BTN_QUEUE,
+  BTN_SKIP,
+  BTN_STOP,
+} = require('../services/nowPlayingPanel');
+
+function buildRingoHelpEmbed() {
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('/ringo - Huong Dan Lenh Bot')
+    .setDescription('Danh sach toan bo lenh hien co va cach dung nhanh.')
+    .addFields(
+      {
+        name: 'Music',
+        value: [
+          '`/play url input:<youtube_url>`: Them bai vao queue va phat.',
+          '`/play search input:<ten bai>`: Tim theo ten roi phat.',
+          '`/play myplaylist name:<ten> [infinite]`: Phat ngay playlist da luu.',
+          '`/play playlist url:<youtube_playlist_url> [infinite]`: Phat playlist YouTube.',
+          '`/skip`: Bo qua bai hien tai.',
+          '`/stop`: Dung phat, xoa queue, ngat voice.',
+          '`/queue`: Xem queue hien tai.',
+          '`/leave`: Bot roi voice channel.',
+          '`/present`: Ve lai UI Now Playing khi panel bi loi/mat.',
+        ].join('\n'),
+      },
+      {
+        name: 'Playlist Create',
+        value: [
+          '`/createplaylist create name:<ten>` hoac `/cpl create ...`: Tao playlist.',
+          '`/createplaylist import name:<ten> url:<playlist_url>`: Tao playlist tu YouTube playlist.',
+          '`/createplaylist delete name:<ten>` hoac `/cpl delete ...`: Xoa playlist.',
+          '`/createplaylist rename name:<cu> new_name:<moi>` hoac `/cpl rename ...`: Doi ten.',
+        ].join('\n'),
+      },
+      {
+        name: 'Playlist Use',
+        value: [
+          '`/myplaylist panel` hoac `/mpl panel`: Mo UI quan ly playlist.',
+          '`/myplaylist list` hoac `/mpl list`: Liet ke playlist cua ban.',
+          '`/myplaylist view name:<ten>`: Xem bai trong playlist.',
+          '`/myplaylist add name:<ten> url:<youtube_url>`: Them bai vao playlist.',
+          '`/myplaylist remove name:<ten> index:<so>`: Xoa bai theo vi tri.',
+          '`/myplaylist play name:<ten> [infinite]`: Play playlist/lap vo han.',
+          '`/myplaylist savequeue name:<ten> [mode]`: Luu bai dang phat + queue vao playlist.',
+        ].join('\n'),
+      },
+      {
+        name: 'Luu y quyen han',
+        value: 'Playlist gan theo tai khoan Discord. User khac khong the sua/xoa playlist cua ban.',
+      },
+    )
+    .setFooter({ text: 'Tip: Mo /mpl panel de thao tac playlist bang nut va select menu.' })
+    .setTimestamp(new Date());
+}
+
+function buildQueueEmbed(guildState) {
+  const embed = new EmbedBuilder()
+    .setColor(0x1f6feb)
+    .setTitle('Queue')
+    .setTimestamp(new Date());
+
+  if (!guildState.current && guildState.tracks.length === 0) {
+    embed.setDescription('Hang cho dang trong.');
+    return embed;
+  }
+
+  if (guildState.current) {
+    embed.addFields({
+      name: 'Dang phat',
+      value: `${guildState.current.title}${guildState.current.durationSec ? ` (${formatDuration(guildState.current.durationSec)})` : ''}`,
+    });
+  }
+
+  if (guildState.tracks.length > 0) {
+    const list = guildState.tracks
+      .slice(0, 12)
+      .map((t, i) => `${i + 1}. ${t.title}${t.durationSec ? ` (${formatDuration(t.durationSec)})` : ''}`)
+      .join('\n');
+    embed.addFields({ name: `Hang cho (${guildState.tracks.length} bai)`, value: list });
+  }
+
+  return embed;
+}
+
+function createInteractionHandler({
+  playerService,
+  panelService,
+  playlistStore,
+  playlistPanelService,
+  youtubeService,
+}) {
+  const { ids } = playlistPanelService;
+
+  function getQueueSnapshot(guildState) {
+    const snapshot = [];
+    if (guildState.current) snapshot.push(guildState.current);
+    if (guildState.tracks.length > 0) snapshot.push(...guildState.tracks);
+    return snapshot.map((track) => ({
+      url: track.url,
+      title: track.title,
+      durationSec: track.durationSec || 0,
+      thumbnail: track.thumbnail || null,
+    }));
+  }
+
+  async function handleCreatePlaylistCommands(interaction) {
+    const sub = interaction.options.getSubcommand();
+    const userId = interaction.user.id;
+
+    if (sub === 'create') {
+      const name = interaction.options.getString('name', true);
+      const created = playlistStore.createPlaylist(userId, name);
+      await interaction.reply({ content: `Da tao playlist: **${created.name}**`, ephemeral: true });
+      return;
+    }
+
+    if (sub === 'delete') {
+      const name = interaction.options.getString('name', true);
+      playlistStore.deletePlaylist(userId, name);
+      await interaction.reply({ content: `Da xoa playlist: **${playlistStore.normalizePlaylistName(name)}**`, ephemeral: true });
+      return;
+    }
+
+    if (sub === 'rename') {
+      const oldName = interaction.options.getString('name', true);
+      const newName = interaction.options.getString('new_name', true);
+      const renamed = playlistStore.renamePlaylist(userId, oldName, newName);
+      await interaction.reply({ content: `Da doi ten playlist thanh: **${renamed.name}**`, ephemeral: true });
+      return;
+    }
+
+    if (sub === 'import') {
+      await interaction.deferReply({ ephemeral: true });
+      const name = interaction.options.getString('name', true);
+      const inputUrl = interaction.options.getString('url', true);
+
+      if (playlistStore.getPlaylistByName(userId, name)) {
+        throw new Error('Playlist da ton tai. Hay dung ten khac hoac xoa playlist cu.');
+      }
+
+      const imported = await youtubeService.fetchYoutubePlaylistTracks(inputUrl);
+      const created = playlistStore.createPlaylist(userId, name);
+      const cappedTracks = imported.tracks.slice(0, playlistStore.MAX_TRACKS_PER_PLAYLIST);
+      playlistStore.addTracksToPlaylist(userId, created.key, cappedTracks);
+
+      const note = imported.tracks.length > cappedTracks.length
+        ? ` (gioi han ${playlistStore.MAX_TRACKS_PER_PLAYLIST} bai)`
+        : '';
+      await interaction.editReply(
+        `Da tao playlist **${created.name}** tu **${imported.title}** voi ${cappedTracks.length} bai${note}.`,
+      );
+    }
+  }
+
+  async function handleMyPlaylistCommands(interaction, guildState) {
+    const sub = interaction.options.getSubcommand();
+    const userId = interaction.user.id;
+
+    if (sub === 'panel') {
+      const panel = playlistPanelService.buildPlaylistPanelPayload(userId, null, guildState);
+      await interaction.reply({ ...panel.payload, ephemeral: true });
+      const reply = await interaction.fetchReply();
+      playlistPanelService.setState(reply.id, userId, panel.selectedKey);
+      return;
+    }
+
+    if (sub === 'list') {
+      const playlists = playlistStore.listUserPlaylists(userId);
+      if (playlists.length === 0) {
+        await interaction.reply({ content: 'Ban chua co playlist nao. Dung /cpl create de tao playlist.', ephemeral: true });
+        return;
+      }
+      const text = playlists.map((p, i) => `${i + 1}. ${p.name} (${p.tracks.length} bai)`).join('\n');
+      await interaction.reply({ content: text, ephemeral: true });
+      return;
+    }
+
+    if (sub === 'view') {
+      const name = interaction.options.getString('name', true);
+      const playlist = playlistStore.getPlaylistByName(userId, name);
+      if (!playlist) throw new Error('Khong tim thay playlist.');
+
+      const embed = new EmbedBuilder()
+        .setColor(0x198754)
+        .setTitle(`Playlist: ${playlist.name}`)
+        .setDescription(
+          playlist.tracks.length === 0
+            ? 'Playlist dang trong.'
+            : playlist.tracks.slice(0, 20).map((t, i) => `${i + 1}. ${t.title}${t.durationSec ? ` (${formatDuration(t.durationSec)})` : ''}`).join('\n'),
+        )
+        .setFooter({ text: `Tong ${playlist.tracks.length} bai` })
+        .setTimestamp(new Date());
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+      return;
+    }
+
+    if (sub === 'add') {
+      await interaction.deferReply({ ephemeral: true });
+      const name = interaction.options.getString('name', true);
+      const rawUrl = interaction.options.getString('url', true);
+      const url = youtubeService.normalizePlayableUrl(rawUrl);
+      const meta = await youtubeService.getVideoMetadata(url);
+      const playlist = playlistStore.addTrackToPlaylist(userId, name, {
+        url,
+        title: meta.title,
+        durationSec: meta.durationSec,
+        thumbnail: meta.thumbnail,
+      });
+      await interaction.editReply(`Da them vao playlist **${playlist.name}**: ${meta.title}`);
+      return;
+    }
+
+    if (sub === 'remove') {
+      const name = interaction.options.getString('name', true);
+      const index = interaction.options.getInteger('index', true);
+      const removed = playlistStore.removeTrackByIndex(userId, name, index);
+      await interaction.reply({ content: `Da xoa bai: ${removed.title}`, ephemeral: true });
+      return;
+    }
+
+    if (sub === 'play') {
+      await interaction.deferReply();
+      const name = interaction.options.getString('name', true);
+      const infinite = interaction.options.getBoolean('infinite') || false;
+      const playlist = playlistStore.getPlaylistByName(userId, name);
+      if (!playlist) throw new Error('Khong tim thay playlist.');
+      if (playlist.tracks.length === 0) throw new Error('Playlist dang trong.');
+
+      await playerService.ensureConnection(interaction, guildState);
+      playerService.enqueuePlaylistToGuildWithOptions(guildState, playlist, interaction.user.username, { shuffle: false });
+      playerService.configurePlaylistLoop(guildState, playlist, interaction.user.username, { infinite, shuffle: false });
+      if (!guildState.current) {
+        await playerService.playNext(interaction, guildState);
+      }
+      await panelService.upsertNowPlayingPanel(guildState);
+      await interaction.followUp({
+        content: `Da nap playlist **${playlist.name}** (${playlist.tracks.length} bai). Infinite: **${infinite ? 'ON' : 'OFF'}**.`,
+      });
+      return;
+    }
+
+    if (sub === 'savequeue') {
+      const targetName = interaction.options.getString('name', true);
+      const mode = interaction.options.getString('mode') || 'replace';
+      const snapshot = getQueueSnapshot(guildState);
+      if (snapshot.length === 0) throw new Error('Queue hien tai dang trong.');
+
+      let playlist = playlistStore.getPlaylistByName(userId, targetName);
+      if (!playlist) {
+        playlist = playlistStore.createPlaylist(userId, targetName);
+      }
+
+      if (mode === 'append') {
+        playlist = playlistStore.addTracksToPlaylist(userId, playlist.key, snapshot);
+      } else {
+        playlist = playlistStore.replacePlaylistTracks(userId, playlist.key, snapshot);
+      }
+
+      await interaction.reply({
+        content: `Da luu ${snapshot.length} bai vao playlist **${playlist.name}** (mode: ${mode}).`,
+        ephemeral: true,
+      });
+    }
+  }
+
+  async function handle(interaction) {
+    if (interaction.guildId && interaction.channelId) {
+      playerService.setActiveTextChannel(interaction.guildId, interaction.channelId);
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith(`${ids.PL_SELECT}:`)) {
+      const ownerId = interaction.customId.split(':')[1];
+      if (interaction.user.id !== ownerId) {
+        await interaction.reply({ content: 'Day khong phai playlist panel cua ban.', ephemeral: true });
+        return;
+      }
+
+      const guildState = playerService.getGuildState(interaction.guildId);
+      const selectedKey = interaction.values[0];
+      const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState);
+      playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
+      await interaction.update(panel.payload);
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith(`${ids.PL_TRACK_REMOVE_SELECT}:`)) {
+      const ownerId = interaction.customId.split(':')[1];
+      if (interaction.user.id !== ownerId) {
+        await interaction.reply({ content: 'Day khong phai playlist panel cua ban.', ephemeral: true });
+        return;
+      }
+
+      const guildState = playerService.getGuildState(interaction.guildId);
+      const state = playlistPanelService.getState(interaction.message.id) || { ownerId, selectedKey: null };
+      const selectedKey = state.selectedKey || playlistStore.listUserPlaylists(ownerId)[0]?.key || null;
+      if (!selectedKey) {
+        await interaction.reply({ content: 'Ban chua co playlist de thao tac.', ephemeral: true });
+        return;
+      }
+
+      const index = Number(interaction.values[0]);
+      const removed = playlistStore.removeTrackByIndex(ownerId, selectedKey, index);
+      const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState, `Da xoa: ${removed.title}`);
+      playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
+      await interaction.update(panel.payload);
+      return;
+    }
+
+    if (interaction.isButton()) {
+      const guildState = playerService.getGuildState(interaction.guildId);
+
+      try {
+        if (interaction.customId === BTN_QUEUE) {
+          await interaction.reply({ embeds: [buildQueueEmbed(guildState)], ephemeral: true });
+          return;
+        }
+
+        if (interaction.customId === BTN_PAUSE_RESUME
+          || interaction.customId === BTN_PREVIOUS
+          || interaction.customId === BTN_SKIP
+          || interaction.customId === BTN_INFINITE
+          || interaction.customId === BTN_STOP) {
+          playerService.requireSameVoiceChannel(interaction, guildState);
+        }
+
+        if (interaction.customId === BTN_PAUSE_RESUME) {
+          if (!guildState.current) {
+            await interaction.reply({ content: 'Khong co bai nao dang phat.', ephemeral: true });
+            return;
+          }
+
+          if (guildState.isPaused) {
+            guildState.player.unpause();
+            guildState.isPaused = false;
+            guildState.currentStartedAtMs = Date.now() - guildState.pausedElapsedMs;
+            await interaction.reply({ content: 'Da tiep tuc phat.', ephemeral: true });
+          } else {
+            guildState.player.pause(true);
+            guildState.isPaused = true;
+            guildState.pausedElapsedMs = Math.max(0, Date.now() - guildState.currentStartedAtMs);
+            await interaction.reply({ content: 'Da tam dung.', ephemeral: true });
+          }
+
+          await panelService.upsertNowPlayingPanel(guildState);
+          return;
+        }
+
+        if (interaction.customId === BTN_SKIP) {
+          if (!guildState.current) {
+            await interaction.reply({ content: 'Khong co bai nao dang phat.', ephemeral: true });
+            return;
+          }
+          guildState.player.stop();
+          await interaction.reply({ content: 'Da skip bai hien tai.', ephemeral: true });
+          return;
+        }
+
+        if (interaction.customId === BTN_PREVIOUS) {
+          playerService.playPrevious(guildState);
+          await interaction.reply({ content: 'Da quay lai bai truoc.', ephemeral: true });
+          return;
+        }
+
+        if (interaction.customId === BTN_INFINITE) {
+          const status = playerService.toggleInfiniteMode(guildState);
+          await panelService.upsertNowPlayingPanel(guildState);
+          await interaction.reply({ content: `Infinite ${status ? 'ON' : 'OFF'}.`, ephemeral: true });
+          return;
+        }
+
+        if (interaction.customId === BTN_STOP) {
+          playerService.clearAndDisconnect(guildState);
+          await panelService.upsertNowPlayingPanel(guildState);
+          await interaction.reply({ content: 'Da dung nhac va xoa hang cho.', ephemeral: true });
+          return;
+        }
+
+        if (interaction.customId.startsWith('pl_')) {
+          const [action, ownerId] = interaction.customId.split(':');
+          if (!ownerId) throw new Error('Playlist action khong hop le.');
+          if (interaction.user.id !== ownerId) {
+            await interaction.reply({ content: 'Day khong phai playlist panel cua ban.', ephemeral: true });
+            return;
+          }
+
+          const state = playlistPanelService.getState(interaction.message.id) || { ownerId, selectedKey: null };
+          const selectedKey = state.selectedKey || playlistStore.listUserPlaylists(ownerId)[0]?.key || null;
+
+          if (action === ids.PL_REFRESH) {
+            const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState);
+            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
+            await interaction.update(panel.payload);
+            return;
+          }
+
+          if (!selectedKey) {
+            await interaction.reply({ content: 'Ban chua co playlist de thao tac.', ephemeral: true });
+            return;
+          }
+
+          if (action === ids.PL_PLAY || action === ids.PL_PLAY_INFINITE) {
+            await interaction.deferUpdate();
+            const playlist = playlistStore.getPlaylistByKey(ownerId, selectedKey);
+            if (!playlist || playlist.tracks.length === 0) throw new Error('Playlist dang trong.');
+            const infinite = action === ids.PL_PLAY_INFINITE;
+
+            await playerService.ensureConnection(interaction, guildState);
+            playerService.enqueuePlaylistToGuildWithOptions(guildState, playlist, interaction.user.username, { shuffle: false });
+            playerService.configurePlaylistLoop(guildState, playlist, interaction.user.username, { infinite, shuffle: false });
+            if (!guildState.current) {
+              await playerService.playNext(null, guildState);
+            }
+
+            const panel = playlistPanelService.buildPlaylistPanelPayload(
+              ownerId,
+              selectedKey,
+              guildState,
+              `Da nap playlist ${playlist.name}. Infinite: ${infinite ? 'ON' : 'OFF'}.`,
+            );
+            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
+            await interaction.editReply(panel.payload);
+            return;
+          }
+
+          if (action === ids.PL_ADD_CURRENT) {
+            if (!guildState.current) throw new Error('Khong co bai dang phat de them.');
+            playlistStore.addTrackToPlaylist(ownerId, selectedKey, guildState.current);
+            const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState, `Da them: ${guildState.current.title}`);
+            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
+            await interaction.update(panel.payload);
+            return;
+          }
+
+          if (action === ids.PL_REMOVE_LAST) {
+            const removed = playlistStore.removeLastTrack(ownerId, selectedKey);
+            const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState, `Da xoa: ${removed.title}`);
+            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
+            await interaction.update(panel.payload);
+            return;
+          }
+
+          if (action === ids.PL_SAVE_QUEUE) {
+            const playlist = playlistStore.getPlaylistByKey(ownerId, selectedKey);
+            if (!playlist) throw new Error('Khong tim thay playlist.');
+            const snapshot = getQueueSnapshot(guildState);
+            if (snapshot.length === 0) throw new Error('Queue hien tai dang trong.');
+            const updated = playlistStore.replacePlaylistTracks(ownerId, selectedKey, snapshot);
+            const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState, `Da save ${snapshot.length} bai vao ${updated.name}`);
+            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
+            await interaction.update(panel.payload);
+            return;
+          }
+
+          if (action === ids.PL_DELETE) {
+            const name = playlistStore.getUserPlaylistMap(ownerId)[selectedKey]?.name || selectedKey;
+            playlistStore.deletePlaylist(ownerId, selectedKey);
+            const fallback = playlistStore.listUserPlaylists(ownerId)[0]?.key || null;
+            const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, fallback, guildState, `Da xoa playlist: ${name}`);
+            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
+            await interaction.update(panel.payload);
+            return;
+          }
+        }
+      } catch (error) {
+        const content = `Loi: ${error.message || 'khong ro nguyen nhan'}`;
+        if (interaction.deferred || interaction.replied) {
+          await interaction.followUp({ content, ephemeral: true }).catch(() => null);
+        } else {
+          await interaction.reply({ content, ephemeral: true }).catch(() => null);
+        }
+      }
+
+      return;
+    }
+
+    if (!interaction.isChatInputCommand()) return;
+
+    const guildState = playerService.getGuildState(interaction.guildId);
+
+    try {
+      if (interaction.commandName === 'play') {
+        await interaction.deferReply();
+        await playerService.ensureConnection(interaction, guildState);
+        const sub = interaction.options.getSubcommand();
+
+        if (sub === 'myplaylist') {
+          const name = interaction.options.getString('name', true);
+          const infinite = interaction.options.getBoolean('infinite') || false;
+          const playlist = playlistStore.getPlaylistByName(interaction.user.id, name);
+          if (!playlist) throw new Error('Khong tim thay playlist cua ban.');
+          if (playlist.tracks.length === 0) throw new Error('Playlist dang trong.');
+
+          playerService.enqueuePlaylistToGuildWithOptions(guildState, playlist, interaction.user.username, { shuffle: false });
+          playerService.configurePlaylistLoop(guildState, playlist, interaction.user.username, { infinite, shuffle: false });
+
+          if (!guildState.current) {
+            await playerService.playNext(interaction, guildState);
+          } else {
+            await panelService.upsertNowPlayingPanel(guildState);
+          }
+
+          await interaction.followUp({
+            content: `Da nap playlist **${playlist.name}** (${playlist.tracks.length} bai). Infinite: **${infinite ? 'ON' : 'OFF'}**.`,
+          });
+          return;
+        }
+
+        if (sub === 'playlist') {
+          const inputUrl = interaction.options.getString('url', true);
+          const infinite = interaction.options.getBoolean('infinite') || false;
+          const ytPlaylist = await youtubeService.fetchYoutubePlaylistTracks(inputUrl);
+          if (!ytPlaylist || ytPlaylist.tracks.length === 0) {
+            throw new Error('Playlist YouTube khong co bai hop le de phat.');
+          }
+
+          const virtualPlaylist = {
+            name: ytPlaylist.title || 'YouTube Playlist',
+            tracks: ytPlaylist.tracks,
+          };
+
+          playerService.enqueuePlaylistToGuildWithOptions(guildState, virtualPlaylist, interaction.user.username, { shuffle: false });
+          playerService.configurePlaylistLoop(guildState, virtualPlaylist, interaction.user.username, { infinite, shuffle: false });
+
+          if (!guildState.current) {
+            await playerService.playNext(interaction, guildState);
+          } else {
+            await panelService.upsertNowPlayingPanel(guildState);
+          }
+
+          await interaction.followUp({
+            content: `Da nap YouTube playlist **${virtualPlaylist.name}** (${virtualPlaylist.tracks.length} bai). Infinite: **${infinite ? 'ON' : 'OFF'}**.`,
+          });
+          return;
+        }
+
+        let queued;
+        if (sub === 'url') {
+          const rawUrl = interaction.options.getString('input', true);
+          const url = youtubeService.normalizePlayableUrl(rawUrl);
+          const meta = await youtubeService.getVideoMetadata(url);
+          queued = {
+            url,
+            title: meta.title,
+            durationSec: meta.durationSec,
+            thumbnail: meta.thumbnail,
+            requestedBy: interaction.user.username,
+          };
+        } else if (sub === 'search') {
+          const query = interaction.options.getString('input', true);
+          const found = await youtubeService.searchYoutubeVideo(query);
+          queued = {
+            url: found.url,
+            title: found.title,
+            durationSec: found.durationSec,
+            thumbnail: found.thumbnail,
+            requestedBy: interaction.user.username,
+          };
+        } else {
+          throw new Error('Subcommand /play khong hop le.');
+        }
+
+        guildState.tracks.push(queued);
+
+        if (!guildState.current) {
+          await playerService.playNext(interaction, guildState);
+        } else {
+          await panelService.upsertNowPlayingPanel(guildState);
+        }
+
+        await interaction.followUp({ content: `Da them vao hang cho: ${queued.title}` });
+        return;
+      }
+
+      if (interaction.commandName === 'skip') {
+        if (!guildState.current) {
+          await interaction.reply({ content: 'Khong co bai nao dang phat.', ephemeral: true });
+          return;
+        }
+        guildState.player.stop();
+        await interaction.reply('Da skip bai hien tai.');
+        return;
+      }
+
+      if (interaction.commandName === 'stop') {
+        playerService.clearAndDisconnect(guildState);
+        await panelService.upsertNowPlayingPanel(guildState);
+        await interaction.reply('Da dung nhac va xoa hang cho.');
+        return;
+      }
+
+      if (interaction.commandName === 'queue') {
+        await interaction.reply({ embeds: [buildQueueEmbed(guildState)] });
+        return;
+      }
+
+      if (interaction.commandName === 'present') {
+        guildState.panelMessageId = null;
+        guildState.panelChannelId = null;
+        await panelService.upsertNowPlayingPanel(guildState, interaction.channelId);
+        await interaction.reply({ content: 'Da hien thi lai UI Now Playing.', ephemeral: true });
+        return;
+      }
+
+      if (interaction.commandName === 'leave') {
+        playerService.clearAndDisconnect(guildState);
+        await panelService.upsertNowPlayingPanel(guildState);
+        await interaction.reply('Da roi voice channel.');
+        return;
+      }
+
+      if (interaction.commandName === 'createplaylist' || interaction.commandName === 'cpl') {
+        await handleCreatePlaylistCommands(interaction);
+        return;
+      }
+
+      if (interaction.commandName === 'myplaylist' || interaction.commandName === 'mpl') {
+        await handleMyPlaylistCommands(interaction, guildState);
+        return;
+      }
+
+      if (interaction.commandName === 'ringo') {
+        await interaction.reply({ embeds: [buildRingoHelpEmbed()], ephemeral: true });
+      }
+    } catch (error) {
+      console.error(error);
+      const message = `Loi: ${error.message || 'khong ro nguyen nhan'}`;
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp({ content: message, ephemeral: true }).catch(() => null);
+      } else {
+        await interaction.reply({ content: message, ephemeral: true }).catch(() => null);
+      }
+    }
+  }
+
+  return {
+    handle,
+  };
+}
+
+module.exports = {
+  createInteractionHandler,
+};

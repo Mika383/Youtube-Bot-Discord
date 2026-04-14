@@ -1,0 +1,43 @@
+{
+  "users": {
+    "535012291888807946": {
+      "playlists": {
+        "us": {
+          "key": "us",
+          "name": "us",
+          "createdAt": 1776150089949,
+          "tracks": [
+            {
+              "url": "https://www.youtube.com/watch?v=Ip6cw8gfHHI",
+              "title": "d4vd - Here With Me [Official Music Video]",
+              "durationSec": 222,
+              "thumbnail": "https://i.ytimg.com/vi/Ip6cw8gfHHI/maxresdefault.jpg?v=637c5064",
+              "addedAt": 1776150137526
+            },
+            {
+              "url": "https://www.youtube.com/watch?v=kPlSyYtE63M",
+              "title": "Until I Found You (Em Beihold Version)",
+              "durationSec": 177,
+              "thumbnail": "https://i.ytimg.com/vi_webp/kPlSyYtE63M/maxresdefault.webp",
+              "addedAt": 1776150165176
+            },
+            {
+              "url": "https://www.youtube.com/watch?v=6POZlJAZsok",
+              "title": "Just the Two of Us (feat. Bill Withers)",
+              "durationSec": 439,
+              "thumbnail": "https://i.ytimg.com/vi_webp/6POZlJAZsok/maxresdefault.webp",
+              "addedAt": 1776150177196
+            },
+            {
+              "url": "https://www.youtube.com/watch?v=kvazBqAlx58",
+              "title": "Put Your Head On My Shoulder",
+              "durationSec": 163,
+              "thumbnail": "https://i.ytimg.com/vi/kvazBqAlx58/maxresdefault.jpg",
+              "addedAt": 1776150213497
+            }
+          ]
+        }
+      }
+    }
+  }
+}
