@@ -487,7 +487,11 @@ function createInteractionHandler({
       if (interaction.commandName === 'play') {
         await interaction.deferReply();
         await playerService.ensureConnection(interaction, guildState);
-        const sub = interaction.options.getSubcommand();
+        let sub = interaction.options.getSubcommand(false);
+        const legacyInput = interaction.options.getString('url', false) || interaction.options.getString('input', false);
+        if (!sub && legacyInput) {
+          sub = 'url';
+        }
 
         if (sub === 'myplaylist') {
           const name = interaction.options.getString('name', true);
@@ -541,7 +545,8 @@ function createInteractionHandler({
 
         let queued;
         if (sub === 'url') {
-          const rawUrl = interaction.options.getString('input', true);
+          const rawUrl = interaction.options.getString('input', false) || legacyInput;
+          if (!rawUrl) throw new Error('Thieu URL dau vao cho /play.');
           const url = youtubeService.normalizePlayableUrl(rawUrl);
           const meta = await youtubeService.getVideoMetadata(url);
           queued = {
@@ -562,7 +567,7 @@ function createInteractionHandler({
             requestedBy: interaction.user.username,
           };
         } else {
-          throw new Error('Subcommand /play khong hop le.');
+          throw new Error('Lenh /play chua duoc dong bo. Hay reload Discord (Ctrl+R) va dung /play url, /play search, hoac /play myplaylist.');
         }
 
         guildState.tracks.push(queued);
