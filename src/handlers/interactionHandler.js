@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
 const { formatDuration } = require('../utils/format');
+const { createLogger } = require('../utils/logger');
 const {
   BTN_INFINITE,
   BTN_PAUSE_RESUME,
@@ -8,6 +9,8 @@ const {
   BTN_SKIP,
   BTN_STOP,
 } = require('../services/nowPlayingPanel');
+
+const logger = createLogger('interaction');
 
 function buildRingoHelpEmbed() {
   return new EmbedBuilder()
@@ -97,6 +100,34 @@ function createInteractionHandler({
 }) {
   const { ids } = playlistPanelService;
 
+  function buildInteractionMeta(interaction, extra = {}) {
+    let subcommand = null;
+    if (interaction?.isChatInputCommand?.()) {
+      try {
+        subcommand = interaction.options.getSubcommand(false);
+      } catch {
+        subcommand = null;
+      }
+    }
+
+    return {
+      interactionType: interaction?.type || null,
+      commandName: interaction?.commandName || null,
+      subcommand,
+      customId: interaction?.customId || null,
+      guildId: interaction?.guildId || null,
+      channelId: interaction?.channelId || null,
+      userId: interaction?.user?.id || null,
+      username: interaction?.user?.username || null,
+      messageId: interaction?.message?.id || null,
+      values: interaction?.values || null,
+      memberVoiceChannelId: interaction?.member?.voice?.channelId || null,
+      deferred: Boolean(interaction?.deferred),
+      replied: Boolean(interaction?.replied),
+      ...extra,
+    };
+  }
+
   function getQueueSnapshot(guildState) {
     const snapshot = [];
     if (guildState.current) snapshot.push(guildState.current);
@@ -112,10 +143,15 @@ function createInteractionHandler({
   async function handleCreatePlaylistCommands(interaction) {
     const sub = interaction.options.getSubcommand();
     const userId = interaction.user.id;
+    logger.info('Handling createplaylist subcommand.', buildInteractionMeta(interaction, { sub }));
 
     if (sub === 'create') {
       const name = interaction.options.getString('name', true);
       const created = playlistStore.createPlaylist(userId, name);
+      logger.info('Playlist created.', buildInteractionMeta(interaction, {
+        playlistName: created.name,
+        playlistKey: created.key,
+      }));
       await interaction.reply({ content: `Da tao playlist: **${created.name}**`, ephemeral: true });
       return;
     }
@@ -123,6 +159,9 @@ function createInteractionHandler({
     if (sub === 'delete') {
       const name = interaction.options.getString('name', true);
       playlistStore.deletePlaylist(userId, name);
+      logger.info('Playlist deleted.', buildInteractionMeta(interaction, {
+        playlistName: playlistStore.normalizePlaylistName(name),
+      }));
       await interaction.reply({ content: `Da xoa playlist: **${playlistStore.normalizePlaylistName(name)}**`, ephemeral: true });
       return;
     }
@@ -131,6 +170,10 @@ function createInteractionHandler({
       const oldName = interaction.options.getString('name', true);
       const newName = interaction.options.getString('new_name', true);
       const renamed = playlistStore.renamePlaylist(userId, oldName, newName);
+      logger.info('Playlist renamed.', buildInteractionMeta(interaction, {
+        oldName,
+        newName: renamed.name,
+      }));
       await interaction.reply({ content: `Da doi ten playlist thanh: **${renamed.name}**`, ephemeral: true });
       return;
     }
@@ -139,6 +182,10 @@ function createInteractionHandler({
       await interaction.deferReply({ ephemeral: true });
       const name = interaction.options.getString('name', true);
       const inputUrl = interaction.options.getString('url', true);
+      logger.info('Importing YouTube playlist into local playlist.', buildInteractionMeta(interaction, {
+        playlistName: name,
+        inputUrl,
+      }));
 
       if (playlistStore.getPlaylistByName(userId, name)) {
         throw new Error('Playlist da ton tai. Hay dung ten khac hoac xoa playlist cu.');
@@ -148,6 +195,12 @@ function createInteractionHandler({
       const created = playlistStore.createPlaylist(userId, name);
       const cappedTracks = imported.tracks.slice(0, playlistStore.MAX_TRACKS_PER_PLAYLIST);
       playlistStore.addTracksToPlaylist(userId, created.key, cappedTracks);
+      logger.info('Playlist import completed.', buildInteractionMeta(interaction, {
+        playlistName: created.name,
+        sourceTitle: imported.title,
+        importedTrackCount: imported.tracks.length,
+        storedTrackCount: cappedTracks.length,
+      }));
 
       const note = imported.tracks.length > cappedTracks.length
         ? ` (gioi han ${playlistStore.MAX_TRACKS_PER_PLAYLIST} bai)`
@@ -162,9 +215,15 @@ function createInteractionHandler({
   async function handleMyPlaylistCommands(interaction, guildState) {
     const sub = interaction.options.getSubcommand();
     const userId = interaction.user.id;
+    logger.info('Handling myplaylist subcommand.', buildInteractionMeta(interaction, {
+      sub,
+      currentTitle: guildState.current?.title || null,
+      queueLength: guildState.tracks.length,
+    }));
 
     if (sub === 'panel') {
       const panel = playlistPanelService.buildPlaylistPanelPayload(userId, null, guildState);
+      logger.info('Opening playlist panel.', buildInteractionMeta(interaction, { selectedKey: panel.selectedKey }));
       await interaction.reply({ ...panel.payload, ephemeral: true });
       const reply = await interaction.fetchReply();
       playlistPanelService.setState(reply.id, userId, panel.selectedKey);
@@ -205,6 +264,10 @@ function createInteractionHandler({
       await interaction.deferReply({ ephemeral: true });
       const name = interaction.options.getString('name', true);
       const rawUrl = interaction.options.getString('url', true);
+      logger.info('Adding track to local playlist.', buildInteractionMeta(interaction, {
+        playlistName: name,
+        rawUrl,
+      }));
       const url = youtubeService.normalizePlayableUrl(rawUrl);
       const meta = await youtubeService.getVideoMetadata(url);
       const playlist = playlistStore.addTrackToPlaylist(userId, name, {
@@ -213,6 +276,11 @@ function createInteractionHandler({
         durationSec: meta.durationSec,
         thumbnail: meta.thumbnail,
       });
+      logger.info('Track added to local playlist.', buildInteractionMeta(interaction, {
+        playlistName: playlist.name,
+        trackTitle: meta.title,
+        trackUrl: url,
+      }));
       await interaction.editReply(`Da them vao playlist **${playlist.name}**: ${meta.title}`);
       return;
     }
@@ -232,6 +300,11 @@ function createInteractionHandler({
       const playlist = playlistStore.getPlaylistByName(userId, name);
       if (!playlist) throw new Error('Khong tim thay playlist.');
       if (playlist.tracks.length === 0) throw new Error('Playlist dang trong.');
+      logger.info('Playing saved local playlist.', buildInteractionMeta(interaction, {
+        playlistName: playlist.name,
+        trackCount: playlist.tracks.length,
+        infinite,
+      }));
 
       await playerService.ensureConnection(interaction, guildState);
       playerService.enqueuePlaylistToGuildWithOptions(guildState, playlist, interaction.user.username, { shuffle: false });
@@ -251,6 +324,11 @@ function createInteractionHandler({
       const mode = interaction.options.getString('mode') || 'replace';
       const snapshot = getQueueSnapshot(guildState);
       if (snapshot.length === 0) throw new Error('Queue hien tai dang trong.');
+      logger.info('Saving queue into local playlist.', buildInteractionMeta(interaction, {
+        targetName,
+        mode,
+        snapshotLength: snapshot.length,
+      }));
 
       let playlist = playlistStore.getPlaylistByName(userId, targetName);
       if (!playlist) {
@@ -267,10 +345,17 @@ function createInteractionHandler({
         content: `Da luu ${snapshot.length} bai vao playlist **${playlist.name}** (mode: ${mode}).`,
         ephemeral: true,
       });
+      logger.info('Queue saved into local playlist.', buildInteractionMeta(interaction, {
+        playlistName: playlist.name,
+        mode,
+        snapshotLength: snapshot.length,
+      }));
     }
   }
 
   async function handle(interaction) {
+    logger.info('Interaction received.', buildInteractionMeta(interaction));
+
     if (interaction.guildId && interaction.channelId) {
       playerService.setActiveTextChannel(interaction.guildId, interaction.channelId);
     }
@@ -278,12 +363,14 @@ function createInteractionHandler({
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith(`${ids.PL_SELECT}:`)) {
       const ownerId = interaction.customId.split(':')[1];
       if (interaction.user.id !== ownerId) {
+        logger.warn('Rejected playlist select interaction because owner did not match.', buildInteractionMeta(interaction, { ownerId }));
         await interaction.reply({ content: 'Day khong phai playlist panel cua ban.', ephemeral: true });
         return;
       }
 
       const guildState = playerService.getGuildState(interaction.guildId);
       const selectedKey = interaction.values[0];
+      logger.info('Playlist select menu changed.', buildInteractionMeta(interaction, { selectedKey }));
       const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState);
       playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
       await interaction.update(panel.payload);
@@ -293,6 +380,7 @@ function createInteractionHandler({
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith(`${ids.PL_TRACK_REMOVE_SELECT}:`)) {
       const ownerId = interaction.customId.split(':')[1];
       if (interaction.user.id !== ownerId) {
+        logger.warn('Rejected playlist remove-track interaction because owner did not match.', buildInteractionMeta(interaction, { ownerId }));
         await interaction.reply({ content: 'Day khong phai playlist panel cua ban.', ephemeral: true });
         return;
       }
@@ -306,6 +394,7 @@ function createInteractionHandler({
       }
 
       const index = Number(interaction.values[0]);
+      logger.info('Playlist remove-track menu used.', buildInteractionMeta(interaction, { selectedKey, index }));
       const removed = playlistStore.removeTrackByIndex(ownerId, selectedKey, index);
       const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState, `Da xoa: ${removed.title}`);
       playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
@@ -315,6 +404,10 @@ function createInteractionHandler({
 
     if (interaction.isButton()) {
       const guildState = playerService.getGuildState(interaction.guildId);
+      logger.info('Button interaction received.', buildInteractionMeta(interaction, {
+        currentTitle: guildState.current?.title || null,
+        queueLength: guildState.tracks.length,
+      }));
 
       try {
         if (interaction.customId === BTN_QUEUE) {
@@ -386,6 +479,7 @@ function createInteractionHandler({
           const [action, ownerId] = interaction.customId.split(':');
           if (!ownerId) throw new Error('Playlist action khong hop le.');
           if (interaction.user.id !== ownerId) {
+            logger.warn('Rejected playlist button because owner did not match.', buildInteractionMeta(interaction, { ownerId, action }));
             await interaction.reply({ content: 'Day khong phai playlist panel cua ban.', ephemeral: true });
             return;
           }
@@ -410,6 +504,12 @@ function createInteractionHandler({
             const playlist = playlistStore.getPlaylistByKey(ownerId, selectedKey);
             if (!playlist || playlist.tracks.length === 0) throw new Error('Playlist dang trong.');
             const infinite = action === ids.PL_PLAY_INFINITE;
+            logger.info('Playlist panel requested playback.', buildInteractionMeta(interaction, {
+              selectedKey,
+              playlistName: playlist.name,
+              trackCount: playlist.tracks.length,
+              infinite,
+            }));
 
             await playerService.ensureConnection(interaction, guildState);
             playerService.enqueuePlaylistToGuildWithOptions(guildState, playlist, interaction.user.username, { shuffle: false });
@@ -469,6 +569,7 @@ function createInteractionHandler({
           }
         }
       } catch (error) {
+        logger.error('Button interaction failed.', buildInteractionMeta(interaction, { error }));
         const content = `Loi: ${error.message || 'khong ro nguyen nhan'}`;
         if (interaction.deferred || interaction.replied) {
           await interaction.followUp({ content, ephemeral: true }).catch(() => null);
@@ -483,6 +584,10 @@ function createInteractionHandler({
     if (!interaction.isChatInputCommand()) return;
 
     const guildState = playerService.getGuildState(interaction.guildId);
+    logger.info('Chat input command received.', buildInteractionMeta(interaction, {
+      currentTitle: guildState.current?.title || null,
+      queueLength: guildState.tracks.length,
+    }));
 
     try {
       if (interaction.commandName === 'play') {
@@ -494,12 +599,23 @@ function createInteractionHandler({
           sub = 'url';
         }
 
+        logger.info('Handling /play command.', buildInteractionMeta(interaction, {
+          resolvedSubcommand: sub,
+          legacyInput: legacyInput || null,
+        }));
+
         if (sub === 'myplaylist') {
           const name = interaction.options.getString('name', true);
           const infinite = interaction.options.getBoolean('infinite') || false;
           const playlist = playlistStore.getPlaylistByName(interaction.user.id, name);
           if (!playlist) throw new Error('Khong tim thay playlist cua ban.');
           if (playlist.tracks.length === 0) throw new Error('Playlist dang trong.');
+
+          logger.info('Queueing saved playlist from /play myplaylist.', buildInteractionMeta(interaction, {
+            playlistName: playlist.name,
+            trackCount: playlist.tracks.length,
+            infinite,
+          }));
 
           playerService.enqueuePlaylistToGuildWithOptions(guildState, playlist, interaction.user.username, { shuffle: false });
           playerService.configurePlaylistLoop(guildState, playlist, interaction.user.username, { infinite, shuffle: false });
@@ -519,6 +635,10 @@ function createInteractionHandler({
         if (sub === 'playlist') {
           const inputUrl = interaction.options.getString('url', true);
           const infinite = interaction.options.getBoolean('infinite') || false;
+          logger.info('Resolving YouTube playlist for /play playlist.', buildInteractionMeta(interaction, {
+            inputUrl,
+            infinite,
+          }));
           const ytPlaylist = await youtubeService.fetchYoutubePlaylistTracks(inputUrl);
           if (!ytPlaylist || ytPlaylist.tracks.length === 0) {
             throw new Error('Playlist YouTube khong co bai hop le de phat.');
@@ -548,6 +668,7 @@ function createInteractionHandler({
         if (sub === 'url') {
           const rawUrl = interaction.options.getString('input', false) || legacyInput;
           if (!rawUrl) throw new Error('Thieu URL dau vao cho /play.');
+          logger.info('Resolving /play url input.', buildInteractionMeta(interaction, { rawUrl }));
           const url = youtubeService.normalizePlayableUrl(rawUrl);
           const meta = await youtubeService.getVideoMetadata(url);
           queued = {
@@ -559,6 +680,7 @@ function createInteractionHandler({
           };
         } else if (sub === 'search') {
           const query = interaction.options.getString('input', true);
+          logger.info('Resolving /play search input.', buildInteractionMeta(interaction, { query }));
           const found = await youtubeService.searchYoutubeVideo(query);
           queued = {
             url: found.url,
@@ -572,6 +694,11 @@ function createInteractionHandler({
         }
 
         guildState.tracks.push(queued);
+        logger.info('Track queued successfully.', buildInteractionMeta(interaction, {
+          queuedTitle: queued.title,
+          queuedUrl: queued.url,
+          queueLength: guildState.tracks.length,
+        }));
 
         if (!guildState.current) {
           await playerService.playNext(interaction, guildState);
@@ -584,6 +711,7 @@ function createInteractionHandler({
       }
 
       if (interaction.commandName === 'skip') {
+        logger.info('Handling /skip command.', buildInteractionMeta(interaction));
         if (!guildState.current) {
           await interaction.reply({ content: 'Khong co bai nao dang phat.', ephemeral: true });
           return;
@@ -594,6 +722,7 @@ function createInteractionHandler({
       }
 
       if (interaction.commandName === 'stop') {
+        logger.info('Handling /stop command.', buildInteractionMeta(interaction));
         playerService.clearAndDisconnect(guildState);
         await panelService.upsertNowPlayingPanel(guildState);
         await interaction.reply('Da dung nhac va xoa hang cho.');
@@ -601,11 +730,13 @@ function createInteractionHandler({
       }
 
       if (interaction.commandName === 'queue') {
+        logger.info('Handling /queue command.', buildInteractionMeta(interaction, { queueLength: guildState.tracks.length }));
         await interaction.reply({ embeds: [buildQueueEmbed(guildState)] });
         return;
       }
 
       if (interaction.commandName === 'present') {
+        logger.info('Handling /present command.', buildInteractionMeta(interaction));
         guildState.panelMessageId = null;
         guildState.panelChannelId = null;
         await panelService.upsertNowPlayingPanel(guildState, interaction.channelId);
@@ -614,6 +745,7 @@ function createInteractionHandler({
       }
 
       if (interaction.commandName === 'leave') {
+        logger.info('Handling /leave command.', buildInteractionMeta(interaction));
         playerService.clearAndDisconnect(guildState);
         await panelService.upsertNowPlayingPanel(guildState);
         await interaction.reply('Da roi voice channel.');
@@ -621,20 +753,23 @@ function createInteractionHandler({
       }
 
       if (interaction.commandName === 'createplaylist' || interaction.commandName === 'cpl') {
+        logger.info('Handling create playlist command family.', buildInteractionMeta(interaction));
         await handleCreatePlaylistCommands(interaction);
         return;
       }
 
       if (interaction.commandName === 'myplaylist' || interaction.commandName === 'mpl') {
+        logger.info('Handling myplaylist command family.', buildInteractionMeta(interaction));
         await handleMyPlaylistCommands(interaction, guildState);
         return;
       }
 
       if (interaction.commandName === 'ringo') {
+        logger.info('Handling /ringo command.', buildInteractionMeta(interaction));
         await interaction.reply({ embeds: [buildRingoHelpEmbed()], ephemeral: true });
       }
     } catch (error) {
-      console.error(error);
+      logger.error('Chat input command failed.', buildInteractionMeta(interaction, { error }));
       const message = `Loi: ${error.message || 'khong ro nguyen nhan'}`;
       if (interaction.deferred || interaction.replied) {
         await interaction.followUp({ content: message, ephemeral: true }).catch(() => null);
