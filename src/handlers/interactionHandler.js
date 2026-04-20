@@ -152,8 +152,9 @@ function createInteractionHandler({
       const note = imported.tracks.length > cappedTracks.length
         ? ` (gioi han ${playlistStore.MAX_TRACKS_PER_PLAYLIST} bai)`
         : '';
+      const notice = imported.notice ? `\nLuu y: ${imported.notice}` : '';
       await interaction.editReply(
-        `Da tao playlist **${created.name}** tu **${imported.title}** voi ${cappedTracks.length} bai${note}.`,
+        `Da tao playlist **${created.name}** tu **${imported.title}** voi ${cappedTracks.length} bai${note}.${notice}`,
       );
     }
   }
@@ -538,7 +539,7 @@ function createInteractionHandler({
           }
 
           await interaction.followUp({
-            content: `Da nap YouTube playlist **${virtualPlaylist.name}** (${virtualPlaylist.tracks.length} bai). Infinite: **${infinite ? 'ON' : 'OFF'}**.`,
+            content: `Da nap YouTube playlist **${virtualPlaylist.name}** (${virtualPlaylist.tracks.length} bai). Infinite: **${infinite ? 'ON' : 'OFF'}**.${ytPlaylist.notice ? `\nLuu y: ${ytPlaylist.notice}` : ''}`,
           });
           return;
         }
