@@ -68,40 +68,28 @@ function mapPlayDlStreamType(type) {
 }
 
 async function createAudioResourceWithYtDlp(url) {
-  logger.info('Creating audio resource via yt-dlp.', { url });
-  const output = await ytDlp(url, {
-    getUrl: true,
-    jsRuntimes: 'node',
-    noPlaylist: true,
-    noWarnings: true,
-    format: 'bestaudio[acodec=opus][ext=webm]/bestaudio[acodec=opus]/bestaudio/best',
-  });
+  logger.info('Creating audio resource via direct yt-dlp stream.', { url });
 
-  const mediaUrl = String(output || '').trim().split(/\r?\n/).find(Boolean);
-  if (!mediaUrl) {
-    throw new Error('yt-dlp did not return a media URL.');
-  }
-
-  logger.debug('yt-dlp returned media URL.', { url, mediaUrl });
-
-  const response = await fetch(mediaUrl, {
-    headers: { 'user-agent': 'Mozilla/5.0' },
-  });
-
-  if (!response.ok || !response.body) {
-    throw new Error(`Failed to fetch media stream (${response.status}).`);
-  }
-
-  const inputType = detectInputType(mediaUrl, response.headers.get('content-type'));
-  logger.info('Fetched media stream via yt-dlp URL.', {
+  const process = ytDlp.exec(
     url,
-    mediaUrl,
-    inputType,
-    contentType: response.headers.get('content-type'),
-    status: response.status,
+    {
+      output: '-',
+      format: 'bestaudio[acodec=opus][ext=webm]/bestaudio[acodec=opus]/bestaudio/best',
+      quiet: true,
+      noPlaylist: true,
+    },
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+
+  if (!process.stdout) {
+    throw new Error('yt-dlp failed to initialize stdout stream.');
+  }
+
+  logger.debug('Direct yt-dlp stream initialized.', { url });
+
+  return createAudioResource(process.stdout, {
+    inputType: StreamType.Arbitrary,
   });
-  const stream = Readable.fromWeb(response.body);
-  return createAudioResource(stream, { inputType });
 }
 
 async function createAudioResourceWithYtdl(url) {
