@@ -67,6 +67,7 @@ function createPlayerService({ youtubeService, panelService }) {
         playlistLoopTemplate: null,
         playlistLoopShuffle: false,
         playlistLoopRequestedBy: null,
+        idleTimer: null,
       };
 
       logger.info('Created guild player state.', buildGuildMeta(guildState));
@@ -84,6 +85,19 @@ function createPlayerService({ youtubeService, panelService }) {
 
       guildState.player.on(AudioPlayerStatus.Idle, () => {
         logger.info('Audio player entered Idle state.', buildGuildMeta(guildState));
+        if (guildState.tracks.length === 0 && !guildState.queueInfiniteMode && !guildState.playlistLoopTemplate?.length) {
+          logger.info('Queue is empty. Starting 30s idle timer.', buildGuildMeta(guildState));
+          guildState.idleTimer = setTimeout(() => {
+            logger.info('Idle timer reached. Disconnecting.', buildGuildMeta(guildState));
+            clearAndDisconnect(guildState);
+            panelService.upsertNowPlayingPanel(guildState).catch((error) => {
+              logger.error('Failed to update now playing panel after idle timeout.', {
+                ...buildGuildMeta(guildState),
+                error,
+              });
+            });
+          }, 30 * 1000);
+        }
         playNext(null, guildState).catch((error) => {
           logger.error('Failed to advance queue after Idle.', {
             ...buildGuildMeta(guildState),
@@ -158,6 +172,11 @@ function createPlayerService({ youtubeService, panelService }) {
       guildState.isPaused = false;
       guildState.currentStartedAtMs = Date.now();
       guildState.pausedElapsedMs = 0;
+
+      if (guildState.idleTimer) {
+        clearTimeout(guildState.idleTimer);
+        guildState.idleTimer = null;
+      }
 
       try {
         const resource = await youtubeService.createYoutubeAudioResource(next.url);
@@ -401,6 +420,12 @@ function createPlayerService({ youtubeService, panelService }) {
     guildState.playlistLoopTemplate = null;
     guildState.playlistLoopShuffle = false;
     guildState.playlistLoopRequestedBy = null;
+    
+    if (guildState.idleTimer) {
+      clearTimeout(guildState.idleTimer);
+      guildState.idleTimer = null;
+    }
+    
     logger.info('Guild player state cleared.', buildGuildMeta(guildState));
   }
 

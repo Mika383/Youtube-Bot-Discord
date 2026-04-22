@@ -27,6 +27,7 @@ function buildRingoHelpEmbed() {
           '`/play playlist url:<youtube_playlist_url> [infinite]`: Phat playlist YouTube.',
           '`/skip`: Bo qua bai hien tai.',
           '`/stop`: Dung phat, xoa queue, ngat voice.',
+          '`/kill`: Huy phat nhac va roi voice channel ngay lap tuc o bat ki dau.',
           '`/queue`: Xem queue hien tai.',
           '`/leave`: Bot roi voice channel.',
           '`/present`: Ve lai UI Now Playing khi panel bi loi/mat.',
@@ -726,6 +727,14 @@ function createInteractionHandler({
         playerService.clearAndDisconnect(guildState);
         await panelService.upsertNowPlayingPanel(guildState);
         await interaction.reply('Da dung nhac va xoa hang cho.');
+        return;
+      }
+
+      if (interaction.commandName === 'kill') {
+        logger.info('Handling /kill command.', buildInteractionMeta(interaction));
+        playerService.clearAndDisconnect(guildState);
+        await panelService.upsertNowPlayingPanel(guildState);
+        await interaction.reply('Da huy phat nhac va roi voice channel ngay lap tuc.');
         return;
       }
 
