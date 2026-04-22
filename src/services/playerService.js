@@ -28,12 +28,11 @@ function createPlayerService({ youtubeService, panelService }) {
   }
 
   function shuffleArray(items) {
-    const arr = [...items];
-    for (let i = arr.length - 1; i > 0; i -= 1) {
+    for (let i = items.length - 1; i > 0; i -= 1) {
       const j = Math.floor(Math.random() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
+      [items[i], items[j]] = [items[j], items[i]];
     }
-    return arr;
+    return items;
   }
 
   function mapTrackForQueue(track, requestedBy) {
@@ -64,6 +63,7 @@ function createPlayerService({ youtubeService, panelService }) {
         history: [],
         queueInfiniteMode: false,
         queueInfiniteTemplate: null,
+        shuffleInfinite: false,
         playlistLoopTemplate: null,
         playlistLoopShuffle: false,
         playlistLoopRequestedBy: null,
@@ -133,9 +133,11 @@ function createPlayerService({ youtubeService, panelService }) {
     if (guildState.tracks.length === 0 && guildState.queueInfiniteMode && guildState.queueInfiniteTemplate?.length) {
       logger.info('Rehydrating queue from infinite queue template.', buildGuildMeta(guildState, {
         templateLength: guildState.queueInfiniteTemplate.length,
+        shuffleInfinite: guildState.shuffleInfinite,
       }));
+      const template = guildState.shuffleInfinite ? shuffleArray(guildState.queueInfiniteTemplate) : guildState.queueInfiniteTemplate;
       guildState.tracks.push(
-        ...guildState.queueInfiniteTemplate.map((track) => mapTrackForQueue(track, track.requestedBy || 'Infinite Queue')),
+        ...template.map((track) => mapTrackForQueue(track, track.requestedBy || 'Infinite Queue')),
       );
     }
 
@@ -245,6 +247,42 @@ function createPlayerService({ youtubeService, panelService }) {
     guildState.queueInfiniteMode = true;
     guildState.queueInfiniteTemplate = snapshot;
     logger.info('Infinite queue mode enabled.', buildGuildMeta(guildState, {
+      snapshotLength: snapshot.length,
+    }));
+    return true;
+  }
+  
+  function shuffleQueue(guildId) {
+    const guildState = getGuildState(guildId);
+    if (!guildState.tracks || guildState.tracks.length === 0) {
+      throw new Error('Hang cho dang trong, khong co gi de tron.');
+    }
+    guildState.tracks = shuffleArray([...guildState.tracks]);
+    logger.info('Queue shuffled.', buildGuildMeta(guildState));
+  }
+
+  function toggleShuffleInfinite(guildState) {
+    if (guildState.shuffleInfinite) {
+      guildState.shuffleInfinite = false;
+      logger.info('Shuffle infinite mode disabled.', buildGuildMeta(guildState));
+      return false;
+    }
+
+    const snapshot = snapshotQueueForInfinite(guildState);
+    if (snapshot.length === 0) {
+      throw new Error('Khong co bai de bat che do shuffle infinite.');
+    }
+
+    guildState.queueInfiniteMode = true;
+    guildState.shuffleInfinite = true;
+    guildState.queueInfiniteTemplate = snapshot;
+    
+    // Shuffle current tracks immediately when enabled
+    if (guildState.tracks.length > 0) {
+      guildState.tracks = shuffleArray([...guildState.tracks]);
+    }
+    
+    logger.info('Shuffle infinite mode enabled.', buildGuildMeta(guildState, {
       snapshotLength: snapshot.length,
     }));
     return true;
@@ -417,6 +455,7 @@ function createPlayerService({ youtubeService, panelService }) {
     guildState.history = [];
     guildState.queueInfiniteMode = false;
     guildState.queueInfiniteTemplate = null;
+    guildState.shuffleInfinite = false;
     guildState.playlistLoopTemplate = null;
     guildState.playlistLoopShuffle = false;
     guildState.playlistLoopRequestedBy = null;
@@ -441,7 +480,9 @@ function createPlayerService({ youtubeService, panelService }) {
     queue,
     requireSameVoiceChannel,
     setActiveTextChannel,
+    shuffleQueue,
     toggleInfiniteMode,
+    toggleShuffleInfinite,
   };
 }
 

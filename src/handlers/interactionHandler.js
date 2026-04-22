@@ -6,9 +6,12 @@ const {
   BTN_PAUSE_RESUME,
   BTN_PREVIOUS,
   BTN_QUEUE,
+  BTN_SHUFFLE,
+  BTN_SHUFFLE_INFINITE,
   BTN_SKIP,
   BTN_STOP,
 } = require('../services/nowPlayingPanel');
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
 const logger = createLogger('interaction');
 
@@ -26,6 +29,7 @@ function buildRingoHelpEmbed() {
           '`/play myplaylist name:<ten> [infinite]`: Phat ngay playlist da luu.',
           '`/play playlist url:<youtube_playlist_url> [infinite]`: Phat playlist YouTube.',
           '`/skip`: Bo qua bai hien tai.',
+          '`/shuffle`: Tron ngau nhien hang cho.',
           '`/stop`: Dung phat, xoa queue, ngat voice.',
           '`/kill`: Huy phat nhac va roi voice channel ngay lap tuc o bat ki dau.',
           '`/queue`: Xem queue hien tai.',
@@ -63,15 +67,20 @@ function buildRingoHelpEmbed() {
     .setTimestamp(new Date());
 }
 
-function buildQueueEmbed(guildState) {
+function buildQueueEmbed(guildState, page = 1) {
+  const pageSize = 10;
+  const totalTracks = guildState.tracks.length;
+  const totalPages = Math.ceil(totalTracks / pageSize) || 1;
+  const currentPage = Math.max(1, Math.min(page, totalPages));
+
   const embed = new EmbedBuilder()
     .setColor(0x1f6feb)
     .setTitle('Queue')
     .setTimestamp(new Date());
 
-  if (!guildState.current && guildState.tracks.length === 0) {
+  if (!guildState.current && totalTracks === 0) {
     embed.setDescription('Hang cho dang trong.');
-    return embed;
+    return { embed, totalPages: 1, currentPage: 1 };
   }
 
   if (guildState.current) {
@@ -81,15 +90,38 @@ function buildQueueEmbed(guildState) {
     });
   }
 
-  if (guildState.tracks.length > 0) {
+  if (totalTracks > 0) {
+    const start = (currentPage - 1) * pageSize;
+    const end = start + pageSize;
     const list = guildState.tracks
-      .slice(0, 12)
-      .map((t, i) => `${i + 1}. ${t.title}${t.durationSec ? ` (${formatDuration(t.durationSec)})` : ''}`)
+      .slice(start, end)
+      .map((t, i) => `${start + i + 1}. ${t.title}${t.durationSec ? ` (${formatDuration(t.durationSec)})` : ''}`)
       .join('\n');
-    embed.addFields({ name: `Hang cho (${guildState.tracks.length} bai)`, value: list });
+    
+    embed.addFields({ name: `Hang cho (${totalTracks} bai)`, value: list });
+    embed.setFooter({ text: `Trang ${currentPage}/${totalPages} • Tong so ${totalTracks} bai` });
   }
 
-  return embed;
+  return { embed, totalPages, currentPage };
+}
+
+function buildQueueComponents(currentPage, totalPages) {
+  if (totalPages <= 1) return [];
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`queue_prev_${currentPage - 1}`)
+      .setLabel('Trang truoc')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(currentPage <= 1),
+    new ButtonBuilder()
+      .setCustomId(`queue_next_${currentPage + 1}`)
+      .setLabel('Trang sau')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(currentPage >= totalPages),
+  );
+
+  return [row];
 }
 
 function createInteractionHandler({
@@ -420,6 +452,8 @@ function createInteractionHandler({
           || interaction.customId === BTN_PREVIOUS
           || interaction.customId === BTN_SKIP
           || interaction.customId === BTN_INFINITE
+          || interaction.customId === BTN_SHUFFLE
+          || interaction.customId === BTN_SHUFFLE_INFINITE
           || interaction.customId === BTN_STOP) {
           playerService.requireSameVoiceChannel(interaction, guildState);
         }
@@ -469,10 +503,35 @@ function createInteractionHandler({
           return;
         }
 
+        if (interaction.customId === BTN_SHUFFLE) {
+          playerService.shuffleQueue(interaction.guildId);
+          await panelService.upsertNowPlayingPanel(guildState);
+          await interaction.reply({ content: 'Da tron ngau nhien hang cho.', ephemeral: true });
+          return;
+        }
+
+        if (interaction.customId === BTN_SHUFFLE_INFINITE) {
+          const status = playerService.toggleShuffleInfinite(guildState);
+          await panelService.upsertNowPlayingPanel(guildState);
+          await interaction.reply({ content: `Shuffle & Loop ${status ? 'ON' : 'OFF'}.`, ephemeral: true });
+          return;
+        }
+
         if (interaction.customId === BTN_STOP) {
           playerService.clearAndDisconnect(guildState);
           await panelService.upsertNowPlayingPanel(guildState);
           await interaction.reply({ content: 'Da dung nhac va xoa hang cho.', ephemeral: true });
+          return;
+        }
+
+        if (interaction.customId.startsWith('queue_')) {
+          const parts = interaction.customId.split('_');
+          const page = parseInt(parts[2], 10);
+          const { embed, totalPages, currentPage } = buildQueueEmbed(guildState, page);
+          await interaction.update({
+            embeds: [embed],
+            components: buildQueueComponents(currentPage, totalPages),
+          });
           return;
         }
 
@@ -740,7 +799,18 @@ function createInteractionHandler({
 
       if (interaction.commandName === 'queue') {
         logger.info('Handling /queue command.', buildInteractionMeta(interaction, { queueLength: guildState.tracks.length }));
-        await interaction.reply({ embeds: [buildQueueEmbed(guildState)] });
+        const { embed, totalPages, currentPage } = buildQueueEmbed(guildState, 1);
+        await interaction.reply({
+          embeds: [embed],
+          components: buildQueueComponents(currentPage, totalPages),
+        });
+        return;
+      }
+
+      if (interaction.commandName === 'shuffle') {
+        logger.info('Handling /shuffle command.', buildInteractionMeta(interaction));
+        playerService.shuffleQueue(interaction.guildId);
+        await interaction.reply('Da tron ngau nhien hang cho hien tai.');
         return;
       }
 

@@ -89,6 +89,7 @@ function getCommandDefinitions() {
     new SlashCommandBuilder().setName('skip').setDescription('Bo qua bai hien tai'),
     new SlashCommandBuilder().setName('stop').setDescription('Dung nhac va xoa hang cho'),
     new SlashCommandBuilder().setName('queue').setDescription('Xem hang cho hien tai'),
+    new SlashCommandBuilder().setName('shuffle').setDescription('Tron ngau nhien hang cho hien tai'),
     new SlashCommandBuilder().setName('leave').setDescription('Roi voice channel'),
     new SlashCommandBuilder().setName('kill').setDescription('Huy phat nhac va roi voice channel ngay lap tuc'),
     new SlashCommandBuilder().setName('present').setDescription('Hien thi lai giao dien Now Playing'),
