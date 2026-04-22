@@ -12,6 +12,8 @@ const BTN_SKIP = 'music_skip';
 const BTN_STOP = 'music_stop';
 const BTN_QUEUE = 'music_queue';
 const BTN_INFINITE = 'music_infinite';
+const BTN_SHUFFLE = 'music_shuffle';
+const BTN_SHUFFLE_INFINITE = 'music_shuffle_infinite';
 
 function getQueueSummary(guildState) {
   const lines = [];
@@ -94,6 +96,16 @@ function buildControlsRows(guildState) {
       .setCustomId(BTN_QUEUE)
       .setLabel('Queue')
       .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(BTN_SHUFFLE)
+      .setLabel('Shuffle')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!hasCurrent && guildState.tracks.length === 0),
+    new ButtonBuilder()
+      .setCustomId(BTN_SHUFFLE_INFINITE)
+      .setLabel('Shuffle & Loop')
+      .setStyle(guildState.shuffleInfinite ? ButtonStyle.Success : ButtonStyle.Secondary)
+      .setDisabled(!hasCurrent && guildState.tracks.length === 0),
   );
 
   return [row1, row2];
@@ -159,6 +171,8 @@ module.exports = {
   BTN_PAUSE_RESUME,
   BTN_PREVIOUS,
   BTN_QUEUE,
+  BTN_SHUFFLE,
+  BTN_SHUFFLE_INFINITE,
   BTN_SKIP,
   BTN_STOP,
   createNowPlayingPanelService,
