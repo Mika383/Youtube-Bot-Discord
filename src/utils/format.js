@@ -12,7 +12,15 @@ function truncateLabel(text, max = 100) {
   return raw.length > max ? `${raw.slice(0, max - 1)}...` : raw;
 }
 
+function truncateText(text, max = 1000) {
+  const raw = String(text || '');
+  if (raw.length <= max) return raw;
+  if (max <= 1) return raw.slice(0, max);
+  return `${raw.slice(0, max - 1)}…`;
+}
+
 module.exports = {
   formatDuration,
   truncateLabel,
+  truncateText,
 };

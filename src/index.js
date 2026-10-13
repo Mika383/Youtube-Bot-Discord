@@ -29,10 +29,14 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates,
   ],
+  allowedMentions: {
+    parse: [],
+    repliedUser: false,
+  },
 });
 
 const panelService = createNowPlayingPanelService(client);
-const playerService = createPlayerService({ youtubeService, panelService });
+const playerService = createPlayerService({ youtubeService, panelService, client });
 const playlistPanelService = createPlaylistPanelService(playlistStore);
 const interactionHandler = createInteractionHandler({
   playerService,
@@ -76,23 +80,50 @@ client.once(Events.ClientReady, async (readyClient) => {
 });
 
 client.on(Events.InteractionCreate, interactionHandler.handle);
+client.on(Events.VoiceStateUpdate, playerService.handleVoiceStateUpdate);
 
 client.on(Events.Error, (error) => {
   logger.error('Discord client emitted an error.', { error });
 });
 
+let shutdownPromise = null;
+
+function shutdown(reason, exitCode = 0) {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    logger.info('Shutting down Discord bot.', { reason, exitCode });
+    const forceExitTimer = setTimeout(() => {
+      logger.error('Graceful shutdown timed out. Forcing process exit.', { reason, exitCode });
+      process.exit(exitCode || 1);
+    }, 10_000);
+    forceExitTimer.unref();
+
+    await playerService.shutdownAll();
+    client.destroy();
+    clearTimeout(forceExitTimer);
+    process.exit(exitCode);
+  })();
+  return shutdownPromise;
+}
+
+process.on('SIGINT', () => shutdown('SIGINT', 0));
+process.on('SIGTERM', () => shutdown('SIGTERM', 0));
 process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled promise rejection.', { reason });
+  shutdown('unhandledRejection', 1);
 });
-
 process.on('uncaughtException', (error) => {
   logger.error('Uncaught exception.', { error });
+  shutdown('uncaughtException', 1);
 });
 
 globalThis.__musicQueue = playerService.queue;
 
 logger.info('Starting Discord bot process.', {
   hasGuildId: Boolean(guildId),
-  logLevel: process.env.LOG_LEVEL || 'debug',
+  logLevel: process.env.LOG_LEVEL || 'info',
 });
-client.login(token);
+client.login(token).catch((error) => {
+  logger.error('Discord login failed.', { error });
+  shutdown('loginFailed', 1);
+});

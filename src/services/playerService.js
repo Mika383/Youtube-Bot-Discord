@@ -10,7 +10,7 @@ const { createLogger } = require('../utils/logger');
 
 const logger = createLogger('player');
 
-function createPlayerService({ youtubeService, panelService }) {
+function createPlayerService({ youtubeService, panelService, client }) {
   const queue = new Map();
 
   function buildGuildMeta(guildState, extra = {}) {
@@ -56,25 +56,26 @@ function createPlayerService({ youtubeService, panelService }) {
         textChannelId: null,
         panelMessageId: null,
         panelChannelId: null,
-        progressTimer: null,
         isPaused: false,
         currentStartedAtMs: 0,
         pausedElapsedMs: 0,
         history: [],
         queueInfiniteMode: false,
         queueInfiniteTemplate: null,
-        shuffleInfinite: false,
+        shuffleMode: false,
         playlistLoopTemplate: null,
-        playlistLoopShuffle: false,
         playlistLoopRequestedBy: null,
         idleTimer: null,
+        emptyVoiceTimer: null,
+        activeResourceCleanup: null,
+        connectionPromise: null,
+        connectionRecoveryPromise: null,
       };
 
       logger.info('Created guild player state.', buildGuildMeta(guildState));
 
       guildState.player.on(AudioPlayerStatus.Playing, () => {
         logger.info('Audio player entered Playing state.', buildGuildMeta(guildState));
-        panelService.startProgressTicker(guildState);
         panelService.upsertNowPlayingPanel(guildState).catch((error) => {
           logger.error('Failed to update now playing panel while entering Playing.', {
             ...buildGuildMeta(guildState),
@@ -85,6 +86,7 @@ function createPlayerService({ youtubeService, panelService }) {
 
       guildState.player.on(AudioPlayerStatus.Idle, () => {
         logger.info('Audio player entered Idle state.', buildGuildMeta(guildState));
+        releaseActiveResource(guildState);
         if (guildState.tracks.length === 0 && !guildState.queueInfiniteMode && !guildState.playlistLoopTemplate?.length) {
           logger.info('Queue is empty. Starting 30s idle timer.', buildGuildMeta(guildState));
           guildState.idleTimer = setTimeout(() => {
@@ -111,6 +113,7 @@ function createPlayerService({ youtubeService, panelService }) {
           ...buildGuildMeta(guildState),
           error,
         });
+        releaseActiveResource(guildState);
         playNext(null, guildState).catch((playNextError) => {
           logger.error('Failed to advance queue after audio player error.', {
             ...buildGuildMeta(guildState),
@@ -124,7 +127,36 @@ function createPlayerService({ youtubeService, panelService }) {
     return queue.get(guildId);
   }
 
+  function releaseActiveResource(guildState) {
+    const cleanup = guildState.activeResourceCleanup;
+    guildState.activeResourceCleanup = null;
+    if (typeof cleanup !== 'function') return;
+
+    try {
+      cleanup();
+    } catch (error) {
+      logger.warn('Failed to clean up active audio resource.', {
+        ...buildGuildMeta(guildState),
+        error,
+      });
+    }
+  }
+
+  async function sendTextNotice(guildState, content) {
+    if (!client || !guildState.textChannelId) return;
+    const guild = client.guilds.cache.get(guildState.guildId);
+    if (!guild) return;
+    const cached = guild.channels.cache.get(guildState.textChannelId);
+    const channel = cached || await guild.channels.fetch(guildState.textChannelId).catch(() => null);
+    if (!channel?.isTextBased()) return;
+    await channel.send({ content, allowedMentions: { parse: [] } }).catch((error) => {
+      logger.warn('Failed to send player notice.', { ...buildGuildMeta(guildState), error });
+    });
+  }
+
   async function playNext(interaction, guildState) {
+    let lastStreamError = null;
+    let failedTrackCount = 0;
     logger.info('Attempting to play next track.', buildGuildMeta(guildState, {
       triggeredByUserId: interaction?.user?.id || null,
       triggeredByCommand: interaction?.commandName || null,
@@ -133,9 +165,11 @@ function createPlayerService({ youtubeService, panelService }) {
     if (guildState.tracks.length === 0 && guildState.queueInfiniteMode && guildState.queueInfiniteTemplate?.length) {
       logger.info('Rehydrating queue from infinite queue template.', buildGuildMeta(guildState, {
         templateLength: guildState.queueInfiniteTemplate.length,
-        shuffleInfinite: guildState.shuffleInfinite,
+        shuffleMode: guildState.shuffleMode,
       }));
-      const template = guildState.shuffleInfinite ? shuffleArray(guildState.queueInfiniteTemplate) : guildState.queueInfiniteTemplate;
+      const template = guildState.shuffleMode
+        ? shuffleArray([...guildState.queueInfiniteTemplate])
+        : guildState.queueInfiniteTemplate;
       guildState.tracks.push(
         ...template.map((track) => mapTrackForQueue(track, track.requestedBy || 'Infinite Queue')),
       );
@@ -144,10 +178,10 @@ function createPlayerService({ youtubeService, panelService }) {
     if (guildState.tracks.length === 0 && guildState.playlistLoopTemplate?.length) {
       logger.info('Rehydrating queue from playlist loop template.', buildGuildMeta(guildState, {
         templateLength: guildState.playlistLoopTemplate.length,
-        shuffle: guildState.playlistLoopShuffle,
+        shuffle: guildState.shuffleMode,
       }));
-      const loopTracks = guildState.playlistLoopShuffle
-        ? shuffleArray(guildState.playlistLoopTemplate)
+      const loopTracks = guildState.shuffleMode
+        ? shuffleArray([...guildState.playlistLoopTemplate])
         : [...guildState.playlistLoopTemplate];
       guildState.tracks.push(
         ...loopTracks.map((track) => mapTrackForQueue(track, guildState.playlistLoopRequestedBy || 'Playlist Loop')),
@@ -186,13 +220,23 @@ function createPlayerService({ youtubeService, panelService }) {
           nextTitle: next.title,
           nextUrl: next.url,
         }));
+        releaseActiveResource(guildState);
+        guildState.activeResourceCleanup = resource.metadata?.cleanup || null;
         guildState.player.play(resource);
         logger.info('Audio player.play invoked.', buildGuildMeta(guildState, {
           nextTitle: next.title,
           nextUrl: next.url,
+          provider: resource.metadata?.provider || 'unknown',
         }));
         return;
       } catch (streamError) {
+        releaseActiveResource(guildState);
+        guildState.current = null;
+        guildState.isPaused = false;
+        guildState.currentStartedAtMs = 0;
+        guildState.pausedElapsedMs = 0;
+        lastStreamError = streamError;
+        failedTrackCount += 1;
         logger.error('Skipping track due to stream creation/playback error.', {
           ...buildGuildMeta(guildState, {
             failedTitle: next.title,
@@ -207,7 +251,6 @@ function createPlayerService({ youtubeService, panelService }) {
     guildState.isPaused = false;
     guildState.currentStartedAtMs = 0;
     guildState.pausedElapsedMs = 0;
-    panelService.stopProgressTicker(guildState);
     logger.info('Queue exhausted; player state reset.', buildGuildMeta(guildState));
     await panelService.upsertNowPlayingPanel(guildState).catch((error) => {
       logger.error('Failed to update now playing panel after queue exhaustion.', {
@@ -216,6 +259,17 @@ function createPlayerService({ youtubeService, panelService }) {
       });
       return null;
     });
+
+    if (lastStreamError) {
+      const playbackError = new Error(
+        failedTrackCount > 1
+          ? `Khong the phat ${failedTrackCount} bai trong hang cho luc nay.`
+          : 'Khong the phat bai nay luc nay. Vui long thu lai sau.',
+      );
+      playbackError.code = 'PLAYBACK_UNAVAILABLE';
+      playbackError.cause = lastStreamError;
+      throw playbackError;
+    }
   }
 
   function snapshotQueueForInfinite(guildState) {
@@ -232,9 +286,12 @@ function createPlayerService({ youtubeService, panelService }) {
   }
 
   function toggleInfiniteMode(guildState) {
-    if (guildState.queueInfiniteMode) {
+    const enabled = Boolean(guildState.queueInfiniteMode || guildState.playlistLoopTemplate?.length);
+    if (enabled) {
       guildState.queueInfiniteMode = false;
       guildState.queueInfiniteTemplate = null;
+      guildState.playlistLoopTemplate = null;
+      guildState.playlistLoopRequestedBy = null;
       logger.info('Infinite queue mode disabled.', buildGuildMeta(guildState));
       return false;
     }
@@ -246,45 +303,31 @@ function createPlayerService({ youtubeService, panelService }) {
 
     guildState.queueInfiniteMode = true;
     guildState.queueInfiniteTemplate = snapshot;
+    guildState.playlistLoopTemplate = null;
+    guildState.playlistLoopRequestedBy = null;
     logger.info('Infinite queue mode enabled.', buildGuildMeta(guildState, {
       snapshotLength: snapshot.length,
     }));
     return true;
   }
   
-  function shuffleQueue(guildId) {
-    const guildState = getGuildState(guildId);
-    if (!guildState.tracks || guildState.tracks.length === 0) {
-      throw new Error('Hang cho dang trong, khong co gi de tron.');
-    }
-    guildState.tracks = shuffleArray([...guildState.tracks]);
-    logger.info('Queue shuffled.', buildGuildMeta(guildState));
-  }
-
-  function toggleShuffleInfinite(guildState) {
-    if (guildState.shuffleInfinite) {
-      guildState.shuffleInfinite = false;
-      logger.info('Shuffle infinite mode disabled.', buildGuildMeta(guildState));
+  function toggleShuffleMode(guildState) {
+    if (guildState.shuffleMode) {
+      guildState.shuffleMode = false;
+      logger.info('Shuffle mode disabled.', buildGuildMeta(guildState));
       return false;
     }
 
-    const snapshot = snapshotQueueForInfinite(guildState);
-    if (snapshot.length === 0) {
-      throw new Error('Khong co bai de bat che do shuffle infinite.');
+    if (!guildState.current && guildState.tracks.length === 0) {
+      throw new Error('Không có bài để bật Shuffle.');
     }
 
-    guildState.queueInfiniteMode = true;
-    guildState.shuffleInfinite = true;
-    guildState.queueInfiniteTemplate = snapshot;
-    
-    // Shuffle current tracks immediately when enabled
+    guildState.shuffleMode = true;
     if (guildState.tracks.length > 0) {
       guildState.tracks = shuffleArray([...guildState.tracks]);
     }
-    
-    logger.info('Shuffle infinite mode enabled.', buildGuildMeta(guildState, {
-      snapshotLength: snapshot.length,
-    }));
+
+    logger.info('Shuffle mode enabled.', buildGuildMeta(guildState));
     return true;
   }
 
@@ -315,32 +358,88 @@ function createPlayerService({ youtubeService, panelService }) {
       throw new Error('Ban phai vao voice channel truoc da.');
     }
 
-    if (!guildState.connection) {
-      logger.info('Joining voice channel.', buildGuildMeta(guildState, {
-        userId: interaction.user?.id || null,
-        memberVoiceChannelId: memberChannel.id,
-        memberVoiceChannelName: memberChannel.name,
-      }));
-      guildState.connection = joinVoiceChannel({
-        channelId: memberChannel.id,
-        guildId: interaction.guild.id,
-        adapterCreator: interaction.guild.voiceAdapterCreator,
-        selfDeaf: true,
-      });
+    const connectedChannelId = guildState.connection?.joinConfig?.channelId || null;
+    if (connectedChannelId && connectedChannelId !== memberChannel.id) {
+      throw new Error('Bạn phải vào cùng voice channel với bot để điều khiển phát nhạc.');
+    }
 
-      guildState.connection.on('stateChange', (oldState, newState) => {
-        logger.debug('Voice connection state changed.', buildGuildMeta(guildState, {
-          oldStatus: oldState.status,
-          newStatus: newState.status,
-        }));
-      });
+    if (guildState.connection?.state?.status === VoiceConnectionStatus.Destroyed) {
+      guildState.connection = null;
+    }
 
-      await entersState(guildState.connection, VoiceConnectionStatus.Ready, 20_000);
-      guildState.connection.subscribe(guildState.player);
-      logger.info('Voice connection is ready and subscribed to player.', buildGuildMeta(guildState, {
-        memberVoiceChannelId: memberChannel.id,
-        memberVoiceChannelName: memberChannel.name,
-      }));
+    if (guildState.connectionPromise) {
+      await guildState.connectionPromise;
+    } else if (!guildState.connection) {
+      if (!guildState.connectionPromise) {
+        guildState.connectionPromise = (async () => {
+          logger.info('Joining voice channel.', buildGuildMeta(guildState, {
+            userId: interaction.user?.id || null,
+            memberVoiceChannelId: memberChannel.id,
+            memberVoiceChannelName: memberChannel.name,
+          }));
+
+          const connection = joinVoiceChannel({
+            channelId: memberChannel.id,
+            guildId: interaction.guild.id,
+            adapterCreator: interaction.guild.voiceAdapterCreator,
+            selfDeaf: true,
+          });
+          guildState.connection = connection;
+
+          connection.on('stateChange', (oldState, newState) => {
+            logger.debug('Voice connection state changed.', buildGuildMeta(guildState, {
+              oldStatus: oldState.status,
+              newStatus: newState.status,
+            }));
+
+            if (newState.status === VoiceConnectionStatus.Destroyed && guildState.connection === connection) {
+              guildState.connection = null;
+            }
+
+            if (newState.status === VoiceConnectionStatus.Disconnected) {
+              if (guildState.connectionRecoveryPromise) return;
+              guildState.connectionRecoveryPromise = Promise.race([
+                entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+                entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+                entersState(connection, VoiceConnectionStatus.Ready, 5_000),
+              ]).catch(async (error) => {
+                logger.warn('Voice connection could not recover after disconnect.', {
+                  ...buildGuildMeta(guildState),
+                  error,
+                });
+                if (guildState.connection === connection) {
+                  clearAndDisconnect(guildState);
+                  await panelService.upsertNowPlayingPanel(guildState).catch(() => null);
+                  await sendTextNotice(
+                    guildState,
+                    '⚠️ Kết nối voice đã bị gián đoạn và không thể khôi phục. Phiên phát đã được dừng.',
+                  );
+                }
+              }).finally(() => {
+                guildState.connectionRecoveryPromise = null;
+              });
+            }
+          });
+
+          try {
+            await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+          } catch (error) {
+            if (guildState.connection === connection) guildState.connection = null;
+            if (connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
+            throw error;
+          }
+
+          connection.subscribe(guildState.player);
+          logger.info('Voice connection is ready and subscribed to player.', buildGuildMeta(guildState, {
+            memberVoiceChannelId: memberChannel.id,
+            memberVoiceChannelName: memberChannel.name,
+          }));
+        })().finally(() => {
+          guildState.connectionPromise = null;
+        });
+      }
+
+      await guildState.connectionPromise;
     } else {
       logger.debug('Reusing existing voice connection.', buildGuildMeta(guildState, {
         userId: interaction.user?.id || null,
@@ -352,19 +451,7 @@ function createPlayerService({ youtubeService, panelService }) {
     logger.debug('Bound guild state to interaction text channel.', buildGuildMeta(guildState, {
       channelId: interaction.channelId,
     }));
-  }
-
-  function setActiveTextChannel(guildId, channelId) {
-    if (!guildId || !channelId) return;
-    const guildState = getGuildState(guildId);
-    const previousChannelId = guildState.textChannelId;
-    guildState.textChannelId = channelId;
-    if (previousChannelId !== channelId) {
-      logger.info('Active text channel updated.', buildGuildMeta(guildState, {
-        previousChannelId,
-        channelId,
-      }));
-    }
+    return guildState.connection;
   }
 
   function requireSameVoiceChannel(interaction, guildState) {
@@ -388,23 +475,15 @@ function createPlayerService({ youtubeService, panelService }) {
     }
   }
 
-  function enqueuePlaylistToGuild(guildState, playlist, requestedBy) {
-    playlist.tracks.forEach((track) => {
-      guildState.tracks.push(mapTrackForQueue(track, requestedBy));
-    });
-    logger.info('Enqueued playlist to guild queue.', buildGuildMeta(guildState, {
-      playlistName: playlist.name || 'unknown',
-      addedTracks: playlist.tracks.length,
-      requestedBy,
-    }));
-  }
-
   function enqueuePlaylistToGuildWithOptions(guildState, playlist, requestedBy, options = {}) {
-    const shuffle = Boolean(options.shuffle);
-    const list = shuffle ? shuffleArray(playlist.tracks) : [...playlist.tracks];
+    const shuffle = Boolean(options.shuffle) || guildState.shuffleMode;
+    const list = shuffle ? shuffleArray([...playlist.tracks]) : [...playlist.tracks];
     list.forEach((track) => {
       guildState.tracks.push(mapTrackForQueue(track, requestedBy));
     });
+    if (guildState.queueInfiniteMode) {
+      guildState.queueInfiniteTemplate = snapshotQueueForInfinite(guildState);
+    }
     logger.info('Enqueued playlist to guild queue with options.', buildGuildMeta(guildState, {
       playlistName: playlist.name || 'unknown',
       addedTracks: list.length,
@@ -415,30 +494,38 @@ function createPlayerService({ youtubeService, panelService }) {
 
   function configurePlaylistLoop(guildState, playlist, requestedBy, options = {}) {
     const infinite = Boolean(options.infinite);
-    const shuffle = Boolean(options.shuffle);
 
     if (!infinite) {
+      guildState.queueInfiniteMode = false;
+      guildState.queueInfiniteTemplate = null;
       guildState.playlistLoopTemplate = null;
-      guildState.playlistLoopShuffle = false;
       guildState.playlistLoopRequestedBy = null;
       logger.info('Playlist loop disabled.', buildGuildMeta(guildState));
       return;
     }
 
+    guildState.queueInfiniteMode = false;
+    guildState.queueInfiniteTemplate = null;
     guildState.playlistLoopTemplate = playlist.tracks.map((t) => ({
       url: t.url,
       title: t.title,
       durationSec: t.durationSec || 0,
       thumbnail: t.thumbnail || null,
     }));
-    guildState.playlistLoopShuffle = shuffle;
     guildState.playlistLoopRequestedBy = requestedBy;
     logger.info('Playlist loop enabled.', buildGuildMeta(guildState, {
       playlistName: playlist.name || 'unknown',
       templateLength: playlist.tracks.length,
       requestedBy,
-      shuffle,
+      shuffle: guildState.shuffleMode,
     }));
+  }
+
+  function enqueueTrack(guildState, track) {
+    guildState.tracks.push(mapTrackForQueue(track, track.requestedBy || 'Không rõ'));
+    if (guildState.queueInfiniteMode) {
+      guildState.queueInfiniteTemplate = snapshotQueueForInfinite(guildState);
+    }
   }
 
   function clearAndDisconnect(guildState) {
@@ -448,41 +535,87 @@ function createPlayerService({ youtubeService, panelService }) {
     guildState.isPaused = false;
     guildState.currentStartedAtMs = 0;
     guildState.pausedElapsedMs = 0;
+    releaseActiveResource(guildState);
     guildState.player.stop();
     guildState.connection?.destroy();
     guildState.connection = null;
-    panelService.stopProgressTicker(guildState);
     guildState.history = [];
     guildState.queueInfiniteMode = false;
     guildState.queueInfiniteTemplate = null;
-    guildState.shuffleInfinite = false;
+    guildState.shuffleMode = false;
     guildState.playlistLoopTemplate = null;
-    guildState.playlistLoopShuffle = false;
     guildState.playlistLoopRequestedBy = null;
     
     if (guildState.idleTimer) {
       clearTimeout(guildState.idleTimer);
       guildState.idleTimer = null;
     }
+
+    if (guildState.emptyVoiceTimer) {
+      clearTimeout(guildState.emptyVoiceTimer);
+      guildState.emptyVoiceTimer = null;
+    }
     
     logger.info('Guild player state cleared.', buildGuildMeta(guildState));
   }
 
+  function handleVoiceStateUpdate(oldState, newState) {
+    const guild = newState.guild || oldState.guild;
+    const guildState = queue.get(guild?.id);
+    const botChannelId = guildState?.connection?.joinConfig?.channelId || null;
+    if (!guildState || !botChannelId) return;
+
+    const channel = guild.channels.cache.get(botChannelId);
+    const listenerCount = channel?.members?.filter((member) => !member.user.bot).size || 0;
+
+    if (listenerCount > 0) {
+      if (guildState.emptyVoiceTimer) {
+        clearTimeout(guildState.emptyVoiceTimer);
+        guildState.emptyVoiceTimer = null;
+        logger.info('Canceled empty voice timeout because a listener is present.', buildGuildMeta(guildState, {
+          listenerCount,
+        }));
+      }
+      return;
+    }
+
+    if (guildState.emptyVoiceTimer) return;
+    logger.info('Voice channel has no listeners. Starting 60s disconnect timer.', buildGuildMeta(guildState));
+    guildState.emptyVoiceTimer = setTimeout(async () => {
+      guildState.emptyVoiceTimer = null;
+      const activeChannelId = guildState.connection?.joinConfig?.channelId || null;
+      const activeChannel = activeChannelId ? guild.channels.cache.get(activeChannelId) : null;
+      const activeListeners = activeChannel?.members?.filter((member) => !member.user.bot).size || 0;
+      if (!activeChannelId || activeListeners > 0) return;
+
+      logger.info('Empty voice timeout reached. Ending playback session.', buildGuildMeta(guildState));
+      clearAndDisconnect(guildState);
+      await panelService.upsertNowPlayingPanel(guildState).catch(() => null);
+      await sendTextNotice(guildState, '👋 Không còn người nghe trong voice. Bot đã dừng nhạc và rời kênh.');
+    }, 60_000);
+  }
+
+  async function shutdownAll() {
+    for (const guildState of queue.values()) {
+      clearAndDisconnect(guildState);
+    }
+  }
+
   return {
     clearAndDisconnect,
+    enqueueTrack,
     ensureConnection,
-    enqueuePlaylistToGuild,
     enqueuePlaylistToGuildWithOptions,
     configurePlaylistLoop,
     getGuildState,
+    handleVoiceStateUpdate,
     playNext,
     playPrevious,
     queue,
     requireSameVoiceChannel,
-    setActiveTextChannel,
-    shuffleQueue,
+    shutdownAll,
     toggleInfiniteMode,
-    toggleShuffleInfinite,
+    toggleShuffleMode,
   };
 }
 

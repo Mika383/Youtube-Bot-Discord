@@ -5,7 +5,7 @@ const {
   ButtonStyle,
   StringSelectMenuBuilder,
 } = require('discord.js');
-const { formatDuration, truncateLabel } = require('../utils/format');
+const { formatDuration, truncateLabel, truncateText } = require('../utils/format');
 
 const PL_SELECT = 'pl_select';
 const PL_PLAY = 'pl_play';
@@ -14,8 +14,11 @@ const PL_ADD_CURRENT = 'pl_add_current';
 const PL_REMOVE_LAST = 'pl_remove_last';
 const PL_TRACK_REMOVE_SELECT = 'pl_track_remove_select';
 const PL_DELETE = 'pl_delete';
+const PL_DELETE_CONFIRM = 'pl_delete_confirm';
+const PL_DELETE_CANCEL = 'pl_delete_cancel';
 const PL_REFRESH = 'pl_refresh';
 const PL_SAVE_QUEUE = 'pl_save_queue';
+const PANEL_STATE_TTL_MS = 30 * 60 * 1000;
 
 function createPlaylistPanelService(playlistStore) {
   const panelState = new Map();
@@ -35,19 +38,19 @@ function createPlaylistPanelService(playlistStore) {
     } else {
       const preview = selected.tracks.length === 0
         ? 'Playlist dang trong.'
-        : selected.tracks.slice(0, 10).map((t, i) => `${i + 1}. ${t.title}${t.durationSec ? ` (${formatDuration(t.durationSec)})` : ''}`).join('\n');
+        : selected.tracks.slice(0, 10).map((t, i) => `${i + 1}. ${truncateText(t.title, 80)}${t.durationSec ? ` (${formatDuration(t.durationSec)})` : ''}`).join('\n');
 
       embed
         .setDescription(`**${selected.name}**`)
         .addFields(
           { name: 'Tong bai', value: String(selected.tracks.length), inline: true },
-          { name: 'Now playing', value: guildState.current ? guildState.current.title : 'Khong co', inline: true },
-          { name: 'Preview', value: preview },
+          { name: 'Now playing', value: guildState.current ? truncateText(guildState.current.title, 200) : 'Khong co', inline: true },
+          { name: 'Preview', value: truncateText(preview, 1024) },
         );
     }
 
     if (note) {
-      embed.setFooter({ text: note });
+      embed.setFooter({ text: truncateText(note, 500) });
     }
 
     const selectRow = new ActionRowBuilder().addComponents(
@@ -128,21 +131,58 @@ function createPlaylistPanelService(playlistStore) {
     return { selectedKey: selected?.key || null, payload: { embeds: [embed], components } };
   }
 
+  function buildDeleteConfirmationPayload(userId, selectedKey) {
+    const playlist = playlistStore.getPlaylistByKey(userId, selectedKey);
+    if (!playlist) throw new Error('Không tìm thấy playlist cần xóa.');
+
+    const embed = new EmbedBuilder()
+      .setColor(0xed4245)
+      .setTitle('🗑️ Xác nhận xóa playlist')
+      .setDescription(`Bạn có chắc muốn xóa **${playlist.name}** và ${playlist.tracks.length} bài bên trong không?`);
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${PL_DELETE_CONFIRM}:${userId}`)
+        .setStyle(ButtonStyle.Danger)
+        .setLabel('Xóa'),
+      new ButtonBuilder()
+        .setCustomId(`${PL_DELETE_CANCEL}:${userId}`)
+        .setStyle(ButtonStyle.Secondary)
+        .setLabel('Hủy'),
+    );
+
+    return { embeds: [embed], components: [row] };
+  }
+
   function setState(messageId, ownerId, selectedKey) {
-    panelState.set(messageId, { ownerId, selectedKey });
+    const now = Date.now();
+    for (const [key, state] of panelState) {
+      if (state.expiresAt <= now) panelState.delete(key);
+    }
+    panelState.set(messageId, { ownerId, selectedKey, expiresAt: now + PANEL_STATE_TTL_MS });
   }
 
   function getState(messageId) {
-    return panelState.get(messageId) || null;
+    const state = panelState.get(messageId);
+    if (!state) return null;
+    if (state.expiresAt <= Date.now()) {
+      panelState.delete(messageId);
+      return null;
+    }
+    state.expiresAt = Date.now() + PANEL_STATE_TTL_MS;
+    return state;
   }
 
   return {
     buildPlaylistPanelPayload,
+    buildDeleteConfirmationPayload,
     getState,
     setState,
     ids: {
       PL_ADD_CURRENT,
       PL_DELETE,
+      PL_DELETE_CANCEL,
+      PL_DELETE_CONFIRM,
       PL_PLAY,
       PL_PLAY_INFINITE,
       PL_REFRESH,
