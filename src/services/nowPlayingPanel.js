@@ -4,7 +4,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
 } = require('discord.js');
-const { formatDuration } = require('../utils/format');
+const { formatDuration, truncateText } = require('../utils/format');
 
 const BTN_PAUSE_RESUME = 'music_pause_resume';
 const BTN_PREVIOUS = 'music_previous';
@@ -13,45 +13,47 @@ const BTN_STOP = 'music_stop';
 const BTN_QUEUE = 'music_queue';
 const BTN_INFINITE = 'music_infinite';
 const BTN_SHUFFLE = 'music_shuffle';
+// Retained so controls from older messages can fail with a clear response.
 const BTN_SHUFFLE_INFINITE = 'music_shuffle_infinite';
 
-function getQueueSummary(guildState) {
-  const lines = [];
-  if (guildState.current) lines.push(`Dang phat: ${guildState.current.title}`);
-  if (guildState.tracks.length > 0) {
-    lines.push('Hang cho:');
-    guildState.tracks.slice(0, 10).forEach((t, i) => {
-      const duration = t.durationSec ? ` (${formatDuration(t.durationSec)})` : '';
-      lines.push(`${i + 1}. ${t.title}${duration}`);
-    });
-  }
-  if (lines.length === 0) lines.push('Hang cho dang trong.');
-  return lines.join('\n');
+function isInfiniteEnabled(guildState) {
+  return Boolean(guildState.queueInfiniteMode || guildState.playlistLoopTemplate?.length);
 }
 
 function buildNowPlayingEmbed(guildState) {
-  const embed = new EmbedBuilder().setColor(0x2b6cb0).setTimestamp(new Date());
+  const hasCurrent = Boolean(guildState.current);
+  const infiniteEnabled = isInfiniteEnabled(guildState);
+  const shuffleEnabled = Boolean(guildState.shuffleMode);
+  const embed = new EmbedBuilder()
+    .setColor(hasCurrent ? 0x5865f2 : 0x4f545c)
+    .setTitle(hasCurrent ? '🎧 Đang phát' : '🎵 Trình phát')
+    .setTimestamp(new Date());
 
-  if (!guildState.current) {
-    embed
-      .setTitle('Now Playing')
-      .setDescription('Khong co bai nao dang phat.')
-      .addFields({ name: 'Queue', value: `${guildState.tracks.length} bai`, inline: true });
-    return embed;
+  if (!hasCurrent) {
+    return embed
+      .setDescription('Chưa có bài nào đang phát.')
+      .addFields(
+        { name: '📜 Hàng chờ', value: `${guildState.tracks.length} bài`, inline: true },
+        { name: '🔀 Shuffle', value: shuffleEnabled ? 'BẬT' : 'TẮT', inline: true },
+        { name: '🔁 Infinite', value: infiniteEnabled ? 'BẬT' : 'TẮT', inline: true },
+      )
+      .setFooter({ text: 'Dùng /play để bắt đầu một phiên nghe nhạc.' });
   }
 
   const durationSec = guildState.current.durationSec || 0;
-  const totalTime = durationSec ? formatDuration(durationSec) : 'live';
+  const playbackStatus = guildState.isPaused ? '⏸️ Tạm dừng' : '▶️ Đang phát';
 
   embed
-    .setTitle('Now Playing')
-    .setDescription(`**${guildState.current.title}**`)
+    .setDescription(`**${truncateText(guildState.current.title, 300)}**`)
     .addFields(
-      { name: 'Duration', value: totalTime, inline: true },
-      { name: 'Status', value: guildState.isPaused ? 'Paused' : 'Playing', inline: true },
-      { name: 'Queue', value: `${guildState.tracks.length} bai`, inline: true },
-      { name: 'Requested by', value: guildState.current.requestedBy || 'Unknown', inline: true },
-    );
+      { name: '⏱️ Thời lượng', value: durationSec ? formatDuration(durationSec) : 'Live', inline: true },
+      { name: 'Trạng thái', value: playbackStatus, inline: true },
+      { name: '📜 Hàng chờ', value: `${guildState.tracks.length} bài`, inline: true },
+      { name: '🔀 Shuffle', value: shuffleEnabled ? 'BẬT' : 'TẮT', inline: true },
+      { name: '🔁 Infinite', value: infiniteEnabled ? 'BẬT' : 'TẮT', inline: true },
+      { name: '👤 Yêu cầu bởi', value: truncateText(guildState.current.requestedBy || 'Không rõ', 100), inline: true },
+    )
+    .setFooter({ text: 'Các nút màu xanh lá đang được bật.' });
 
   if (guildState.current.thumbnail) {
     embed.setThumbnail(guildState.current.thumbnail);
@@ -60,108 +62,121 @@ function buildNowPlayingEmbed(guildState) {
   return embed;
 }
 
+function iconButton(customId, emoji, style, disabled = false) {
+  return new ButtonBuilder()
+    .setCustomId(customId)
+    .setEmoji(emoji)
+    .setStyle(style)
+    .setDisabled(disabled);
+}
+
 function buildControlsRows(guildState) {
   const hasCurrent = Boolean(guildState.current);
+  const hasPlaybackState = hasCurrent || guildState.tracks.length > 0;
+  const infiniteEnabled = isInfiniteEnabled(guildState);
+  const shuffleEnabled = Boolean(guildState.shuffleMode);
 
-  const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(BTN_PAUSE_RESUME)
-      .setLabel(guildState.isPaused ? 'Resume' : 'Pause')
-      .setStyle(ButtonStyle.Primary)
-      .setDisabled(!hasCurrent),
-    new ButtonBuilder()
-      .setCustomId(BTN_PREVIOUS)
-      .setLabel('Previous')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(!hasCurrent || !guildState.history || guildState.history.length === 0),
-    new ButtonBuilder()
-      .setCustomId(BTN_SKIP)
-      .setLabel('Skip')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(!hasCurrent),
-    new ButtonBuilder()
-      .setCustomId(BTN_INFINITE)
-      .setLabel(guildState.queueInfiniteMode ? 'Infinite ON' : 'Infinite OFF')
-      .setStyle(guildState.queueInfiniteMode ? ButtonStyle.Success : ButtonStyle.Secondary)
-      .setDisabled(!hasCurrent && guildState.tracks.length === 0),
-    new ButtonBuilder()
-      .setCustomId(BTN_STOP)
-      .setLabel('Stop')
-      .setStyle(ButtonStyle.Danger)
-      .setDisabled(!hasCurrent && guildState.tracks.length === 0),
+  const primaryRow = new ActionRowBuilder().addComponents(
+    iconButton(BTN_PREVIOUS, '⏮️', ButtonStyle.Secondary, !hasCurrent || guildState.history.length === 0),
+    iconButton(BTN_PAUSE_RESUME, guildState.isPaused ? '▶️' : '⏸️', ButtonStyle.Primary, !hasCurrent),
+    iconButton(BTN_SKIP, '⏭️', ButtonStyle.Secondary, !hasCurrent),
+    iconButton(BTN_STOP, '⏹️', ButtonStyle.Danger, !hasPlaybackState),
   );
 
-  const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(BTN_QUEUE)
-      .setLabel('Queue')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId(BTN_SHUFFLE)
-      .setLabel('Shuffle')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(!hasCurrent && guildState.tracks.length === 0),
-    new ButtonBuilder()
-      .setCustomId(BTN_SHUFFLE_INFINITE)
-      .setLabel('Shuffle & Loop')
-      .setStyle(guildState.shuffleInfinite ? ButtonStyle.Success : ButtonStyle.Secondary)
-      .setDisabled(!hasCurrent && guildState.tracks.length === 0),
+  const modeRow = new ActionRowBuilder().addComponents(
+    iconButton(BTN_QUEUE, '📜', ButtonStyle.Secondary),
+    iconButton(BTN_SHUFFLE, '🔀', shuffleEnabled ? ButtonStyle.Success : ButtonStyle.Secondary, !hasPlaybackState),
+    iconButton(BTN_INFINITE, '🔁', infiniteEnabled ? ButtonStyle.Success : ButtonStyle.Secondary, !hasPlaybackState),
   );
 
-  return [row1, row2];
+  return [primaryRow, modeRow];
 }
 
 function createNowPlayingPanelService(client) {
-  function startProgressTicker(guildState) {
-    if (guildState.progressTimer) return;
-    guildState.progressTimer = null;
+  const panelOperations = new Map();
+
+  function runSerialized(guildId, operation) {
+    const previous = panelOperations.get(guildId) || Promise.resolve();
+    const current = previous.catch(() => null).then(operation);
+    panelOperations.set(guildId, current);
+    return current.finally(() => {
+      if (panelOperations.get(guildId) === current) panelOperations.delete(guildId);
+    });
   }
 
-  function stopProgressTicker(guildState) {
-    if (!guildState.progressTimer) return;
-    clearInterval(guildState.progressTimer);
-    guildState.progressTimer = null;
+  async function resolveChannel(guild, channelId) {
+    if (!channelId) return null;
+    const cached = guild.channels.cache.get(channelId);
+    const channel = cached || await guild.channels.fetch(channelId).catch(() => null);
+    return channel?.isTextBased() ? channel : null;
+  }
+
+  async function fetchPanelMessage(guild, channelId, messageId) {
+    if (!channelId || !messageId) return null;
+    const channel = await resolveChannel(guild, channelId);
+    if (!channel?.messages) return null;
+    return channel.messages.fetch(messageId).catch(() => null);
+  }
+
+  function buildPayload(guildState) {
+    return {
+      embeds: [buildNowPlayingEmbed(guildState)],
+      components: buildControlsRows(guildState),
+      allowedMentions: { parse: [] },
+    };
   }
 
   async function upsertNowPlayingPanel(guildState, preferredChannelId = null) {
-    const guild = client.guilds.cache.get(guildState.guildId);
-    if (!guild) return;
+    return runSerialized(guildState.guildId, async () => {
+      const guild = client.guilds.cache.get(guildState.guildId);
+      if (!guild) return null;
 
-    if (preferredChannelId) {
-      guildState.textChannelId = preferredChannelId;
-    }
+      if (preferredChannelId) guildState.textChannelId = preferredChannelId;
+      const channel = await resolveChannel(guild, preferredChannelId || guildState.textChannelId);
+      if (!channel) return null;
 
-    const channelId = preferredChannelId || guildState.textChannelId;
-    if (!channelId) return;
-
-    let channel = guild.channels.cache.get(channelId);
-    if (!channel) {
-      channel = await guild.channels.fetch(channelId).catch(() => null);
-    }
-    if (!channel || !channel.isTextBased()) return;
-
-    const payload = {
-      embeds: [buildNowPlayingEmbed(guildState)],
-      components: buildControlsRows(guildState),
-    };
-
-    if (guildState.panelMessageId && guildState.panelChannelId === channel.id) {
-      const oldMsg = await channel.messages.fetch(guildState.panelMessageId).catch(() => null);
-      if (oldMsg) {
-        await oldMsg.edit(payload).catch(() => null);
-        return;
+      if (guildState.panelMessageId && guildState.panelChannelId === channel.id) {
+        const existing = await fetchPanelMessage(guild, channel.id, guildState.panelMessageId);
+        if (existing) {
+          await existing.edit(buildPayload(guildState));
+          return existing;
+        }
       }
-    }
 
-    const sent = await channel.send(payload);
-    guildState.panelMessageId = sent.id;
-    guildState.panelChannelId = sent.channelId;
+      const sent = await channel.send(buildPayload(guildState));
+      guildState.panelMessageId = sent.id;
+      guildState.panelChannelId = sent.channelId;
+      return sent;
+    });
+  }
+
+  async function relocateNowPlayingPanel(guildState, preferredChannelId = null) {
+    return runSerialized(guildState.guildId, async () => {
+      const guild = client.guilds.cache.get(guildState.guildId);
+      if (!guild) return null;
+
+      if (preferredChannelId) guildState.textChannelId = preferredChannelId;
+      const channel = await resolveChannel(guild, preferredChannelId || guildState.textChannelId);
+      if (!channel) return null;
+
+      const oldMessageId = guildState.panelMessageId;
+      const oldChannelId = guildState.panelChannelId;
+      const sent = await channel.send(buildPayload(guildState));
+      guildState.panelMessageId = sent.id;
+      guildState.panelChannelId = sent.channelId;
+
+      const oldMessage = await fetchPanelMessage(guild, oldChannelId, oldMessageId);
+      if (oldMessage && oldMessage.id !== sent.id) {
+        const deleted = await oldMessage.delete().then(() => true).catch(() => false);
+        if (!deleted) await oldMessage.edit({ components: [] }).catch(() => null);
+      }
+
+      return sent;
+    });
   }
 
   return {
-    getQueueSummary,
-    startProgressTicker,
-    stopProgressTicker,
+    relocateNowPlayingPanel,
     upsertNowPlayingPanel,
   };
 }
@@ -175,5 +190,8 @@ module.exports = {
   BTN_SHUFFLE_INFINITE,
   BTN_SKIP,
   BTN_STOP,
+  buildControlsRows,
+  buildNowPlayingEmbed,
   createNowPlayingPanelService,
+  isInfiniteEnabled,
 };

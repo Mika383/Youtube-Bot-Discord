@@ -2,10 +2,96 @@ const { createAudioResource, StreamType } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const play = require('play-dl');
 const ytDlp = require('yt-dlp-exec');
-const { Readable } = require('node:stream');
+const { PassThrough } = require('node:stream');
 const { createLogger } = require('../utils/logger');
 
 const logger = createLogger('youtube');
+const STREAM_START_TIMEOUT_MS = 15_000;
+const FALLBACK_RESOLUTION_TIMEOUT_MS = 15_000;
+const STREAM_BUFFER_BYTES = 256 * 1024;
+const MAX_PROVIDER_ERROR_LENGTH = 2_000;
+const YTDLP_OPUS_FORMAT = 'bestaudio[ext=webm][acodec=opus]';
+
+function sanitizeProviderError(value) {
+  return String(value || '')
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .trim()
+    .slice(0, MAX_PROVIDER_ERROR_LENGTH);
+}
+
+function buildProviderError(provider, message, detail = '') {
+  const error = new Error(message);
+  error.code = 'AUDIO_PROVIDER_ERROR';
+  error.provider = provider;
+  error.detail = sanitizeProviderError(detail);
+  return error;
+}
+
+function withTimeout(promise, timeoutMs, label, onLateResolve = null) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      reject(buildProviderError(label, `${label} timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+
+    Promise.resolve(promise).then(
+      (value) => {
+        if (settled) {
+          try {
+            onLateResolve?.(value);
+          } catch (error) {
+            logger.warn('Late provider result cleanup failed.', { label, error });
+          }
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function waitForReadable(stream, timeoutMs, getEndError) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      stream.off('readable', onReadable);
+      stream.off('end', onEnd);
+      stream.off('error', onError);
+    };
+
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+
+    const onReadable = () => {
+      if (stream.readableLength > 0) finish(resolve);
+    };
+    const onEnd = () => finish(reject, getEndError());
+    const onError = (error) => finish(reject, error);
+    const timer = setTimeout(() => {
+      finish(reject, buildProviderError('yt-dlp', `yt-dlp did not produce audio within ${timeoutMs}ms.`));
+    }, timeoutMs);
+
+    stream.on('readable', onReadable);
+    stream.once('end', onEnd);
+    stream.once('error', onError);
+    onReadable();
+  });
+}
 
 function normalizePlayableUrl(input) {
   const raw = String(input || '').trim().replace(/^<|>$/g, '');
@@ -43,15 +129,6 @@ function normalizePlayableUrl(input) {
   throw new Error('Invalid URL: only YouTube video links are supported.');
 }
 
-function detectInputType(mediaUrl, contentType) {
-  const lowerUrl = String(mediaUrl || '').toLowerCase();
-  const lowerType = String(contentType || '').toLowerCase();
-
-  if (lowerUrl.includes('.webm') || lowerType.includes('webm')) return StreamType.WebmOpus;
-  if (lowerUrl.includes('.ogg') || lowerType.includes('ogg')) return StreamType.OggOpus;
-  return StreamType.Arbitrary;
-}
-
 function mapPlayDlStreamType(type) {
   switch (String(type || '').toLowerCase()) {
     case 'webm/opus':
@@ -67,34 +144,152 @@ function mapPlayDlStreamType(type) {
   }
 }
 
-async function createAudioResourceWithYtDlp(url) {
-  logger.info('Creating audio resource via direct yt-dlp stream.', { url });
+async function createAudioResourceWithYtDlp(url, options = {}) {
+  const preferOpus = options.preferOpus !== false;
+  const format = preferOpus ? YTDLP_OPUS_FORMAT : 'bestaudio/best';
+  const inputType = preferOpus ? StreamType.WebmOpus : StreamType.Arbitrary;
+  logger.info('Creating managed audio resource via yt-dlp.', {
+    url,
+    preferOpus,
+    streamBufferBytes: STREAM_BUFFER_BYTES,
+  });
 
-  const process = ytDlp.exec(
+  const child = ytDlp.exec(
     url,
     {
       output: '-',
-      format: 'bestaudio[acodec=opus][ext=webm]/bestaudio[acodec=opus]/bestaudio/best',
+      format,
       quiet: true,
       noPlaylist: true,
+      noWarnings: true,
+      jsRuntimes: 'node',
     },
-    { stdio: ['ignore', 'pipe', 'ignore'] },
+    { stdio: ['ignore', 'pipe', 'pipe'] },
   );
 
-  if (!process.stdout) {
+  if (!child.stdout || !child.stderr) {
+    child.kill();
     throw new Error('yt-dlp failed to initialize stdout stream.');
   }
 
-  logger.debug('Direct yt-dlp stream initialized.', { url });
+  let stderr = '';
+  let exitCode = null;
+  let exitSignal = null;
+  let cleaned = false;
+  const bufferedStream = new PassThrough({ highWaterMark: STREAM_BUFFER_BYTES });
 
-  return createAudioResource(process.stdout, {
-    inputType: StreamType.Arbitrary,
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => {
+    if (stderr.length < MAX_PROVIDER_ERROR_LENGTH) stderr += chunk;
   });
+
+  const buildExitError = () => buildProviderError(
+    'yt-dlp',
+    exitCode === null
+      ? 'yt-dlp ended before producing audio.'
+      : `yt-dlp exited with code ${exitCode}${exitSignal ? ` (${exitSignal})` : ''}.`,
+    stderr,
+  );
+
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    if (!bufferedStream.destroyed) bufferedStream.destroy();
+    if (child.exitCode === null && child.signalCode === null && !child.killed) {
+      child.kill();
+    }
+  };
+
+  child.once('error', (error) => {
+    if (!bufferedStream.destroyed) bufferedStream.destroy(error);
+  });
+  child.once('close', (code, signal) => {
+    exitCode = code;
+    exitSignal = signal;
+    if (code !== 0 && !bufferedStream.destroyed) {
+      bufferedStream.destroy(buildExitError());
+    }
+  });
+  child.catch(() => null);
+  child.stdout.pipe(bufferedStream);
+
+  try {
+    await waitForReadable(bufferedStream, STREAM_START_TIMEOUT_MS, buildExitError);
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+
+  logger.info('yt-dlp produced initial audio data.', {
+    url,
+    preferOpus,
+    bufferedBytes: bufferedStream.readableLength,
+  });
+
+  const resource = createAudioResource(bufferedStream, {
+    inputType,
+    metadata: {
+      provider: preferOpus ? 'yt-dlp-webm-opus' : 'yt-dlp-generic',
+      cleanup,
+    },
+  });
+
+  bufferedStream.on('error', (error) => {
+    logger.error('Managed yt-dlp audio stream failed after startup.', {
+      url,
+      provider: resource.metadata.provider,
+      error,
+    });
+    if (!resource.playStream.destroyed) resource.playStream.destroy(error);
+  });
+  resource.playStream.once('close', cleanup);
+  return resource;
+}
+
+async function createPreferredYtDlpAudioResource(url) {
+  try {
+    return await createAudioResourceWithYtDlp(url, { preferOpus: true });
+  } catch (error) {
+    const detail = `${error.message || ''} ${error.detail || ''}`.toLowerCase();
+    const formatUnavailable = detail.includes('requested format is not available')
+      || detail.includes('no video formats found')
+      || detail.includes('format is not available');
+
+    if (!formatUnavailable) throw error;
+
+    logger.warn('Preferred WebM/Opus format is unavailable; using generic best audio.', {
+      url,
+      provider: error.provider || 'yt-dlp',
+      errorMessage: error.message,
+      errorDetail: error.detail || null,
+    });
+    return createAudioResourceWithYtDlp(url, { preferOpus: false });
+  }
+}
+
+async function createAudioResourceWithPlayDl(url) {
+  const stream = await withTimeout(
+    play.stream(url),
+    FALLBACK_RESOLUTION_TIMEOUT_MS,
+    'play-dl',
+    (lateStream) => lateStream?.stream?.destroy?.(),
+  );
+  const cleanup = () => stream.stream?.destroy?.();
+  const resource = createAudioResource(stream.stream, {
+    inputType: mapPlayDlStreamType(stream.type),
+    metadata: { provider: 'play-dl', cleanup },
+  });
+  resource.playStream.once('close', cleanup);
+  return resource;
 }
 
 async function createAudioResourceWithYtdl(url) {
   logger.info('Creating audio resource via ytdl-core.', { url });
-  const info = await ytdl.getInfo(url);
+  const info = await withTimeout(
+    ytdl.getInfo(url),
+    FALLBACK_RESOLUTION_TIMEOUT_MS,
+    'ytdl-core',
+  );
   const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
 
   const preferred = audioFormats.find((f) => f.codecs?.includes('opus') && (f.container === 'webm' || f.container === 'ogg'))
@@ -107,7 +302,6 @@ async function createAudioResourceWithYtdl(url) {
 
   logger.info('Selected ytdl-core audio format.', {
     url,
-    formatUrl: preferred.url,
     container: preferred.container,
     codecs: preferred.codecs,
     mimeType: preferred.mimeType,
@@ -125,55 +319,59 @@ async function createAudioResourceWithYtdl(url) {
   if (preferred.container === 'webm' && preferred.codecs?.includes('opus')) inputType = StreamType.WebmOpus;
   if (preferred.container === 'ogg' && preferred.codecs?.includes('opus')) inputType = StreamType.OggOpus;
 
-  return createAudioResource(stream, { inputType });
+  const cleanup = () => stream.destroy?.();
+  const resource = createAudioResource(stream, {
+    inputType,
+    metadata: { provider: 'ytdl-core', cleanup },
+  });
+  resource.playStream.once('close', cleanup);
+  return resource;
 }
 
 async function createYoutubeAudioResource(url) {
-  logger.info('Starting stream resolution chain.', { url, chain: ['play-dl', 'yt-dlp', 'ytdl-core'] });
-  // Ưu tiên dùng play-dl vì nó ổn định nhất trên VPS hiện nay
-  try {
-    const stream = await play.stream(url);
-    logger.info('play-dl stream resolved successfully.', {
-      url,
-      streamType: stream.type,
-      source: 'play-dl',
-    });
-    return createAudioResource(stream.stream, {
-      inputType: mapPlayDlStreamType(stream.type),
-    });
-  } catch (playDlError) {
-    logger.warn('play-dl stream failed; falling back to yt-dlp.', {
-      url,
-      fallbackTo: 'yt-dlp',
-      error: playDlError,
-    });
+  const providers = [
+    ['yt-dlp', () => createPreferredYtDlpAudioResource(url)],
+    ['play-dl', () => createAudioResourceWithPlayDl(url)],
+    ['ytdl-core', () => createAudioResourceWithYtdl(url)],
+  ];
+  const failures = [];
+
+  logger.info('Starting stream resolution chain.', {
+    url,
+    chain: providers.map(([name]) => name),
+  });
+
+  for (const [provider, createResource] of providers) {
+    try {
+      const resource = await createResource();
+      logger.info('Audio stream provider is ready.', {
+        url,
+        provider: resource.metadata?.provider || provider,
+      });
+      return resource;
+    } catch (error) {
+      failures.push({
+        provider,
+        message: error.message || 'Unknown provider error',
+        detail: error.detail || null,
+      });
+      logger.warn('Audio stream provider failed.', {
+        url,
+        provider,
+        fallbackTo: providers[failures.length]?.[0] || null,
+        error,
+      });
+    }
   }
 
-  // Fallback sang yt-dlp nếu play-dl lỗi
-  try {
-    const resource = await createAudioResourceWithYtDlp(url);
-    logger.info('yt-dlp stream resolved successfully.', { url, source: 'yt-dlp' });
-    return resource;
-  } catch (ytDlpError) {
-    logger.warn('yt-dlp stream failed; falling back to ytdl-core.', {
-      url,
-      fallbackTo: 'ytdl-core',
-      error: ytDlpError,
-    });
-  }
-
-  try {
-    const resource = await createAudioResourceWithYtdl(url);
-    logger.info('ytdl-core stream resolved successfully.', { url, source: 'ytdl-core' });
-    return resource;
-  } catch (fallbackError) {
-    logger.error('All stream providers failed for URL.', {
-      url,
-      attemptedProviders: ['play-dl', 'yt-dlp', 'ytdl-core'],
-      error: fallbackError,
-    });
-    throw fallbackError;
-  }
+  const finalError = new Error('Khong the tao audio stream tu YouTube luc nay. Vui long thu lai sau.');
+  finalError.code = 'AUDIO_STREAM_UNAVAILABLE';
+  finalError.failures = failures;
+  logger.error('All audio stream providers failed.', {
+    url,
+    failures,
+  });
+  throw finalError;
 }
 
 

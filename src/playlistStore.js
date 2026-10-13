@@ -39,8 +39,8 @@ function assertPlaylistName(name) {
   if (normalized.length > MAX_PLAYLIST_NAME_LENGTH) {
     throw new Error(`Ten playlist toi da ${MAX_PLAYLIST_NAME_LENGTH} ky tu.`);
   }
-  if (!/^[\w\s-]+$/u.test(normalized)) {
-    throw new Error('Ten playlist chi duoc dung chu, so, dau cach, dau gach ngang/gach duoi.');
+  if (!/^[\p{L}\p{N}\s_-]+$/u.test(normalized)) {
+    throw new Error('Tên playlist chỉ được dùng chữ, số, dấu cách, dấu gạch ngang hoặc gạch dưới.');
   }
   return normalized;
 }

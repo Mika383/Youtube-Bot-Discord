@@ -64,7 +64,7 @@ function buildMyPlaylistCommand(commandName) {
 }
 
 function getCommandDefinitions() {
-  return [
+  const commands = [
     new SlashCommandBuilder()
       .setName('play')
       .setDescription('Phat nhac bang URL, tim theo ten, hoac playlist da luu')
@@ -86,19 +86,21 @@ function getCommandDefinitions() {
         .setDescription('Phat playlist YouTube bang URL')
         .addStringOption((o) => o.setName('url').setDescription('YouTube playlist URL').setRequired(true))
         .addBooleanOption((o) => o.setName('infinite').setDescription('Lap vo han playlist nay'))),
-    new SlashCommandBuilder().setName('skip').setDescription('Bo qua bai hien tai'),
-    new SlashCommandBuilder().setName('stop').setDescription('Dung nhac va xoa hang cho'),
-    new SlashCommandBuilder().setName('queue').setDescription('Xem hang cho hien tai'),
-    new SlashCommandBuilder().setName('shuffle').setDescription('Tron ngau nhien hang cho hien tai'),
-    new SlashCommandBuilder().setName('leave').setDescription('Roi voice channel'),
-    new SlashCommandBuilder().setName('kill').setDescription('Huy phat nhac va roi voice channel ngay lap tuc'),
-    new SlashCommandBuilder().setName('present').setDescription('Hien thi lai giao dien Now Playing'),
+    new SlashCommandBuilder().setName('skip').setDescription('Bỏ qua bài hiện tại'),
+    new SlashCommandBuilder().setName('stop').setDescription('Dừng nhạc và xóa hàng chờ'),
+    new SlashCommandBuilder().setName('queue').setDescription('Xem hàng chờ hiện tại'),
+    new SlashCommandBuilder().setName('shuffle').setDescription('Bật hoặc tắt chế độ Shuffle'),
+    new SlashCommandBuilder().setName('leave').setDescription('Rời voice channel'),
+    new SlashCommandBuilder().setName('kill').setDescription('Hủy phiên phát và rời voice ngay lập tức'),
+    new SlashCommandBuilder().setName('present').setDescription('Hiển thị lại giao diện Now Playing'),
     buildCreatePlaylistCommand('createplaylist'),
     buildCreatePlaylistCommand('cpl'),
     buildMyPlaylistCommand('myplaylist'),
     buildMyPlaylistCommand('mpl'),
-    new SlashCommandBuilder().setName('ringo').setDescription('Hien thi huong dan va toan bo lenh cua bot'),
+    new SlashCommandBuilder().setName('ringo').setDescription('Hiển thị hướng dẫn và toàn bộ lệnh của bot'),
   ];
+
+  return commands.map((command) => command.setDMPermission(false));
 }
 
 module.exports = {

@@ -7,7 +7,7 @@ const LEVELS = {
   error: 40,
 };
 
-const configuredLevel = String(process.env.LOG_LEVEL || 'debug').toLowerCase();
+const configuredLevel = String(process.env.LOG_LEVEL || 'info').toLowerCase();
 const minLevel = LEVELS[configuredLevel] || LEVELS.debug;
 
 function truncateString(value, maxLength = 4000) {

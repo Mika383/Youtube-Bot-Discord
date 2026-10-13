@@ -5,13 +5,11 @@ Discord music bot cho YouTube, ho tro queue, now playing panel, playlist theo us
 ## Features
 
 - Phat nhac YouTube theo URL, theo ten tim kiem, hoac playlist.
-- Now Playing UI trong chat voi buttons:
-  - Pause/Resume
-  - Previous
-  - Skip
-  - Infinite ON/OFF
-  - Stop
-  - Queue
+- Now Playing UI gon, luon duoc dua xuong cuoi chat sau khi `/play`:
+  - `⏮️` Previous, `⏸️/▶️` Pause/Resume, `⏭️` Skip, `⏹️` Stop
+  - `📜` Queue
+  - `🔀` Shuffle va `🔁` Infinite la hai che do doc lap
+  - Toggle OFF mau xam, ON mau xanh la; trang thai cung duoc ghi trong embed
 - Playlist ca nhan theo tai khoan Discord (user khac khong sua duoc).
 - Playlist panel UI (ephemeral) de thao tac nhanh.
 - Import playlist YouTube vao playlist local.
@@ -25,12 +23,13 @@ Discord music bot cho YouTube, ho tro queue, now playing panel, playlist theo us
 - discord.js v14
 - @discordjs/voice
 - @distube/ytdl-core
+- play-dl
 - yt-dlp-exec
 - dotenv
 
 ## Requirements
 
-- Node.js 18+ (khuyen nghi 20+)
+- Node.js 22.12+ (bat buoc boi `@discordjs/voice` hien tai)
 - Discord bot token + app client id
 - Quyen bot trong server:
   - View Channels
@@ -84,20 +83,28 @@ npm start
 - `/skip`
   - Skip bai hien tai.
 
+- `/shuffle`
+  - Bat hoac tat Shuffle; khi bat se tron phan queue con lai.
+
 - `/stop`
   - Dung phat, clear queue, disconnect voice.
 
 - `/leave`
   - Roi voice channel.
 
+- `/kill`
+  - Huy phien phat, xoa queue va roi voice ngay lap tuc.
+
 - `/queue`
   - Hien thi queue duoi dang embed.
 
 - `/present`
-  - Ve lai Now Playing UI trong channel hien tai (useful khi panel bi mat/loi).
+  - Dua Now Playing UI xuong vi tri moi nhat trong channel hien tai.
 
 - `/ringo`
   - Hien thi huong dan tong hop tat ca lenh.
+
+Luu y: lenh thay doi phat nhac chi hoat dong khi ban o cung voice channel voi bot.
 
 ### Playlist Create (`/createplaylist` va alias `/cpl`)
 
@@ -148,15 +155,12 @@ Luu y:
 - Panel la ephemeral, gan voi owner.
 - User khac khong the thao tac panel cua ban.
 
-## Infinite Modes
+## Shuffle va Infinite
 
-Bot co 2 co che infinite:
-
-1. Queue infinite (button `Infinite ON/OFF` trong Now Playing)
-- Lap lai toan bo queue snapshot hien tai.
-
-2. Playlist infinite (khi dung `/play myplaylist ... infinite:true`, `/play playlist ... infinite:true`, hoac `Play Infinite` trong panel playlist)
-- Lap lai danh sach bai cua playlist do.
+- `🔀` bat/tat Shuffle. Khi bat, phan queue con lai duoc tron; khi tat, thu tu cu khong duoc khoi phuc.
+- `🔁` bat/tat Infinite de lap lai phien phat.
+- Khi ca hai cung bat, moi vong lap duoc tron lai.
+- Cac thao tac thay doi phat nhac chi danh cho thanh vien dang o cung voice channel voi bot.
 
 ## Data Storage
 
@@ -199,14 +203,47 @@ src/
 - Neu private/age-restricted/region-locked co the fail.
 - Thu lai voi playlist khac de phan biet loi data.
 
-### 3) ytdl-core warning `Failed to find any playable formats`
+### 3) Loi audio provider
 
-- Bot se fallback sang `yt-dlp`.
-- Day la warning pho bien, khong phai luc nao cung la loi gay dung bot.
+- Bot thu theo thu tu `yt-dlp` -> `play-dl` -> `ytdl-core`.
+- Neu tat ca provider deu loi, bot tra thong bao playback that bai thay vi bao da them bai thanh cong.
 
-### 4) Panel bi mat hoac loi UI
+### 4) Nhac vao `Playing` roi dung ngay
+
+- Chay `npm run update:yt-dlp` de tai lai executable `yt-dlp` stable.
+- Pipeline hien uu tien WebM/Opus truc tiep de tranh encode lai, sau do fallback qua `play-dl` va `ytdl-core`.
+- Bot chi danh dau provider san sang sau khi nhan duoc audio data dau tien; exit code va stderr cua `yt-dlp` duoc ghi log co gioi han.
+
+### 5) Panel bi mat hoac loi UI
 
 - Dung `/present` de render lai panel.
+
+## Linux/PM2 Deploy Shortcut
+
+Chay mot lan tren server de tao lenh `deploybot` trong `~/.bashrc`:
+
+```bash
+echo 'deploybot() { (cd /home/duyhai/discord-bot && git pull --ff-only origin main && npm install && npm run update:yt-dlp && pm2 restart ahso && pm2 status ahso); }' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Sau do deploy bang:
+
+```bash
+deploybot
+```
+
+Luu y: dong `echo ... >> ~/.bashrc` se append them dinh nghia moi moi lan chay. Chi chay mot lan, hoac xoa dinh nghia cu truoc khi them lai.
+
+De gioi han dung luong log PM2 tren server, cai module rotation mot lan:
+
+```bash
+pm2 install pm2-logrotate
+pm2 set pm2-logrotate:retain 30
+pm2 set pm2-logrotate:compress true
+```
+
+Bot xu ly `SIGINT`/`SIGTERM`, dong voice va audio stream truoc khi PM2 restart.
 
 ## Security Notes
 
@@ -218,4 +255,5 @@ src/
 
 - Sau khi doi command schema, luon restart bot.
 - Khi test command moi, uu tien guild commands (co `DISCORD_GUILD_ID`).
+- Bo test tap trung dung Node.js built-in runner: `npm test`.
 - Neu thay warning `ephemeral` deprecated, co the refactor sang `flags` o buoc tiep theo.
