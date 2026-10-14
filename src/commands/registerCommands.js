@@ -67,25 +67,14 @@ function getCommandDefinitions() {
   const commands = [
     new SlashCommandBuilder()
       .setName('play')
-      .setDescription('Phat nhac bang URL, tim theo ten, hoac playlist da luu')
-      .addSubcommand((sub) => sub
-        .setName('url')
-        .setDescription('Phat nhac tu YouTube URL')
-        .addStringOption((o) => o.setName('input').setDescription('YouTube URL').setRequired(true)))
-      .addSubcommand((sub) => sub
-        .setName('search')
-        .setDescription('Tim YouTube theo ten va phat')
-        .addStringOption((o) => o.setName('input').setDescription('Ten bai hat / tu khoa').setRequired(true)))
-      .addSubcommand((sub) => sub
-        .setName('myplaylist')
-        .setDescription('Phat ngay playlist da luu cua ban')
-        .addStringOption((o) => o.setName('name').setDescription('Ten playlist').setRequired(true))
-        .addBooleanOption((o) => o.setName('infinite').setDescription('Lap vo han playlist nay')))
-      .addSubcommand((sub) => sub
-        .setName('playlist')
-        .setDescription('Phat playlist YouTube bang URL')
-        .addStringOption((o) => o.setName('url').setDescription('YouTube playlist URL').setRequired(true))
-        .addBooleanOption((o) => o.setName('infinite').setDescription('Lap vo han playlist nay'))),
+      .setDescription('Phat theo ten bai hat, URL video hoac URL playlist YouTube')
+      .addStringOption((o) => o
+        .setName('input')
+        .setDescription('Ten bai hat, URL video hoac URL playlist YouTube')
+        .setRequired(true))
+      .addBooleanOption((o) => o
+        .setName('infinite')
+        .setDescription('Lap vo han khi input la playlist YouTube')),
     new SlashCommandBuilder().setName('skip').setDescription('Bỏ qua bài hiện tại'),
     new SlashCommandBuilder().setName('stop').setDescription('Dừng nhạc và xóa hàng chờ'),
     new SlashCommandBuilder().setName('queue').setDescription('Xem hàng chờ hiện tại'),

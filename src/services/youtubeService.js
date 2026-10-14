@@ -2,6 +2,8 @@ const { createAudioResource, StreamType } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const play = require('play-dl');
 const ytDlp = require('yt-dlp-exec');
+const fs = require('node:fs');
+const path = require('node:path');
 const { PassThrough } = require('node:stream');
 const { createLogger } = require('../utils/logger');
 
@@ -11,16 +13,149 @@ const FALLBACK_RESOLUTION_TIMEOUT_MS = 15_000;
 const STREAM_BUFFER_BYTES = 256 * 1024;
 const MAX_PROVIDER_ERROR_LENGTH = 2_000;
 const YTDLP_OPUS_FORMAT = 'bestaudio[ext=webm][acodec=opus]';
+const YOUTUBE_ACCESS_COOLDOWN_MS = 5 * 60 * 1000;
+let youtubeAccessBlockedUntil = 0;
+let youtubeAccessBlockReason = null;
+
+function loadYoutubeCookieFile() {
+  const configuredPath = String(process.env.YOUTUBE_COOKIES_FILE || '').trim();
+  if (!configuredPath) return null;
+
+  const resolvedPath = path.resolve(configuredPath);
+
+  try {
+    if (!path.isAbsolute(configuredPath)) {
+      throw new Error('Cookie path must be absolute.');
+    }
+
+    const stats = fs.statSync(resolvedPath);
+    if (!stats.isFile() || stats.size === 0) {
+      throw new Error('Cookie path is not a non-empty file.');
+    }
+
+    fs.accessSync(resolvedPath, fs.constants.R_OK);
+    const lines = fs.readFileSync(resolvedPath, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/);
+    const firstLine = String(lines[0] || '').trim();
+    if (firstLine !== '# Netscape HTTP Cookie File' && firstLine !== '# HTTP Cookie File') {
+      throw new Error('Cookie file is not in Netscape format.');
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const cookieRows = lines
+      .map((line) => line.trim())
+      .filter((line) => line && (!line.startsWith('#') || line.startsWith('#HttpOnly_')))
+      .map((line) => line.split('\t'));
+    const hasUsableCookie = cookieRows.some((fields) => {
+      if (fields.length !== 7 || !fields[0] || !fields[5]) return false;
+      const expiry = Number(fields[4]);
+      return Number.isInteger(expiry) && (expiry === 0 || expiry > nowSeconds);
+    });
+    if (!hasUsableCookie) {
+      throw new Error('Cookie file has no usable cookie rows.');
+    }
+  } catch {
+    throw new Error('YOUTUBE_COOKIES_FILE must be an absolute path to a readable, non-empty Netscape cookie file.');
+  }
+
+  return resolvedPath;
+}
+
+const youtubeCookieFile = loadYoutubeCookieFile();
+
+function buildYtDlpOptions(options = {}) {
+  return {
+    jsRuntimes: 'node',
+    ...(youtubeCookieFile ? { cookies: youtubeCookieFile } : {}),
+    ...options,
+  };
+}
+
+function redactCookiePath(value) {
+  let text = String(value || '');
+  if (youtubeCookieFile) {
+    text = text.split(youtubeCookieFile).join('[cookie-file]');
+  }
+  return text.replace(/--cookies(?:=|\s+)(?:"[^"]+"|'[^']+'|\S+)/gi, '--cookies [cookie-file]');
+}
 
 function sanitizeProviderError(value) {
-  return String(value || '')
+  return redactCookiePath(value)
     .replace(/https?:\/\/\S+/gi, '[url]')
     .trim()
     .slice(0, MAX_PROVIDER_ERROR_LENGTH);
 }
 
+function summarizeProviderError(error) {
+  if (!error) return null;
+  return {
+    name: error.name,
+    code: error.code,
+    status: error.status,
+    statusCode: error.statusCode,
+    message: sanitizeProviderError(error.message),
+    detail: sanitizeProviderError(error.detail || error.stderr || error.shortMessage),
+  };
+}
+
+function classifyYoutubeAccessError(error) {
+  const detail = getErrorText(error).toLowerCase();
+  if (/\b(?:http error )?429\b/.test(detail) || detail.includes('too many requests')) {
+    return 'rate-limited';
+  }
+  if (
+    detail.includes('sign in to confirm you')
+    || detail.includes('confirm you are not a bot')
+    || detail.includes("confirm you're not a bot")
+    || detail.includes('login_required')
+    || detail.includes('login required')
+  ) {
+    return 'authentication-required';
+  }
+  return null;
+}
+
+function buildYoutubeAccessBlockedError(reason, retryAfterMs = YOUTUBE_ACCESS_COOLDOWN_MS) {
+  const retryAfterSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+  const error = new Error(`YouTube dang gioi han hoac yeu cau xac minh. Vui long thu lai sau ${retryAfterSeconds} giay.`);
+  error.code = 'YOUTUBE_ACCESS_COOLDOWN';
+  error.reason = reason;
+  error.retryAfterSeconds = retryAfterSeconds;
+  return error;
+}
+
+function openYoutubeAccessCircuit(error, provider) {
+  const reason = classifyYoutubeAccessError(error);
+  if (!reason) return null;
+
+  youtubeAccessBlockedUntil = Math.max(
+    youtubeAccessBlockedUntil,
+    Date.now() + YOUTUBE_ACCESS_COOLDOWN_MS,
+  );
+  youtubeAccessBlockReason = reason;
+  logger.warn('YouTube access cooldown opened.', {
+    provider,
+    reason,
+    cooldownSeconds: YOUTUBE_ACCESS_COOLDOWN_MS / 1000,
+  });
+  return buildYoutubeAccessBlockedError(reason);
+}
+
+function assertYoutubeAccessAvailable() {
+  const remainingMs = youtubeAccessBlockedUntil - Date.now();
+  if (remainingMs <= 0) {
+    youtubeAccessBlockedUntil = 0;
+    youtubeAccessBlockReason = null;
+    return;
+  }
+  throw buildYoutubeAccessBlockedError(youtubeAccessBlockReason, remainingMs);
+}
+
+logger.info('YouTube cookie authentication configuration loaded.', {
+  enabled: Boolean(youtubeCookieFile),
+});
+
 function buildProviderError(provider, message, detail = '') {
-  const error = new Error(message);
+  const error = new Error(sanitizeProviderError(message));
   error.code = 'AUDIO_PROVIDER_ERROR';
   error.provider = provider;
   error.detail = sanitizeProviderError(detail);
@@ -41,7 +176,10 @@ function withTimeout(promise, timeoutMs, label, onLateResolve = null) {
           try {
             onLateResolve?.(value);
           } catch (error) {
-            logger.warn('Late provider result cleanup failed.', { label, error });
+            logger.warn('Late provider result cleanup failed.', {
+              label,
+              error: summarizeProviderError(error),
+            });
           }
           return;
         }
@@ -129,6 +267,53 @@ function normalizePlayableUrl(input) {
   throw new Error('Invalid URL: only YouTube video links are supported.');
 }
 
+function classifyPlayInput(input) {
+  const raw = String(input || '').trim().replace(/^<|>$/g, '');
+  if (!raw) throw new Error('Thieu ten bai hat hoac URL cho /play.');
+
+  const hasExplicitUrlScheme = /^https?:\/\//i.test(raw);
+  const resemblesYoutubeUrl = /(?:youtube\.com|youtu\.be)/i.test(raw);
+  if (!hasExplicitUrlScheme && !resemblesYoutubeUrl) {
+    return { type: 'search', query: raw };
+  }
+
+  const candidate = hasExplicitUrlScheme ? raw : `https://${raw}`;
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error('URL YouTube khong hop le.');
+  }
+
+  const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+  const supportedHosts = new Set(['youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be']);
+  if (!supportedHosts.has(host)) {
+    throw new Error('Chi ho tro URL YouTube; hay nhap ten bai hat neu muon tim kiem.');
+  }
+
+  const listId = parsed.searchParams.get('list');
+  if (listId && !listId.toUpperCase().startsWith('RD')) {
+    return {
+      type: 'playlist',
+      listId,
+      url: `https://www.youtube.com/playlist?list=${listId}`,
+    };
+  }
+
+  try {
+    return { type: 'video', url: normalizePlayableUrl(candidate) };
+  } catch (error) {
+    const seedVideoId = deriveSeedVideoIdFromListId(listId);
+    if (seedVideoId && ytdl.validateID(seedVideoId)) {
+      return {
+        type: 'video',
+        url: `https://www.youtube.com/watch?v=${seedVideoId}`,
+      };
+    }
+    throw error;
+  }
+}
+
 function mapPlayDlStreamType(type) {
   switch (String(type || '').toLowerCase()) {
     case 'webm/opus':
@@ -156,14 +341,13 @@ async function createAudioResourceWithYtDlp(url, options = {}) {
 
   const child = ytDlp.exec(
     url,
-    {
+    buildYtDlpOptions({
       output: '-',
       format,
       quiet: true,
       noPlaylist: true,
       noWarnings: true,
-      jsRuntimes: 'node',
-    },
+    }),
     { stdio: ['ignore', 'pipe', 'pipe'] },
   );
 
@@ -235,10 +419,11 @@ async function createAudioResourceWithYtDlp(url, options = {}) {
   });
 
   bufferedStream.on('error', (error) => {
+    openYoutubeAccessCircuit(error, 'yt-dlp');
     logger.error('Managed yt-dlp audio stream failed after startup.', {
       url,
       provider: resource.metadata.provider,
-      error,
+      error: summarizeProviderError(error),
     });
     if (!resource.playStream.destroyed) resource.playStream.destroy(error);
   });
@@ -260,8 +445,7 @@ async function createPreferredYtDlpAudioResource(url) {
     logger.warn('Preferred WebM/Opus format is unavailable; using generic best audio.', {
       url,
       provider: error.provider || 'yt-dlp',
-      errorMessage: error.message,
-      errorDetail: error.detail || null,
+      error: summarizeProviderError(error),
     });
     return createAudioResourceWithYtDlp(url, { preferOpus: false });
   }
@@ -329,6 +513,7 @@ async function createAudioResourceWithYtdl(url) {
 }
 
 async function createYoutubeAudioResource(url) {
+  assertYoutubeAccessAvailable();
   const providers = [
     ['yt-dlp', () => createPreferredYtDlpAudioResource(url)],
     ['play-dl', () => createAudioResourceWithPlayDl(url)],
@@ -350,17 +535,19 @@ async function createYoutubeAudioResource(url) {
       });
       return resource;
     } catch (error) {
+      const accessBlockedError = openYoutubeAccessCircuit(error, provider);
       failures.push({
         provider,
-        message: error.message || 'Unknown provider error',
-        detail: error.detail || null,
+        message: sanitizeProviderError(error.message || 'Unknown provider error'),
+        detail: sanitizeProviderError(error.detail || null),
       });
       logger.warn('Audio stream provider failed.', {
         url,
         provider,
-        fallbackTo: providers[failures.length]?.[0] || null,
-        error,
+        fallbackTo: accessBlockedError ? null : providers[failures.length]?.[0] || null,
+        error: summarizeProviderError(error),
       });
+      if (accessBlockedError) throw accessBlockedError;
     }
   }
 
@@ -377,13 +564,12 @@ async function createYoutubeAudioResource(url) {
 
 async function getVideoMetadataWithYtDlp(url) {
   logger.debug('Fetching metadata via yt-dlp.', { url });
-  const json = await ytDlp(url, {
+  const json = await ytDlp(url, buildYtDlpOptions({
     dumpSingleJson: true,
-    jsRuntimes: 'node',
     noPlaylist: true,
     noWarnings: true,
     skipDownload: true,
-  });
+  }));
 
   return {
     title: json?.title || url,
@@ -403,6 +589,7 @@ async function getVideoMetadataWithYtdl(url) {
 }
 
 async function getVideoMetadata(url) {
+  assertYoutubeAccessAvailable();
   try {
     const metadata = await getVideoMetadataWithYtDlp(url);
     logger.info('Metadata resolved via yt-dlp.', {
@@ -412,11 +599,13 @@ async function getVideoMetadata(url) {
     });
     return metadata;
   } catch (primaryError) {
+    const accessBlockedError = openYoutubeAccessCircuit(primaryError, 'yt-dlp');
     logger.warn('yt-dlp metadata failed; falling back to ytdl-core.', {
       url,
-      fallbackTo: 'ytdl-core',
-      error: primaryError,
+      fallbackTo: accessBlockedError ? null : 'ytdl-core',
+      error: summarizeProviderError(primaryError),
     });
+    if (accessBlockedError) throw accessBlockedError;
   }
 
   try {
@@ -428,11 +617,13 @@ async function getVideoMetadata(url) {
     });
     return metadata;
   } catch (fallbackError) {
+    const accessBlockedError = openYoutubeAccessCircuit(fallbackError, 'ytdl-core');
     logger.error('All metadata providers failed for URL.', {
       url,
       attemptedProviders: ['yt-dlp', 'ytdl-core'],
-      error: fallbackError,
+      error: summarizeProviderError(fallbackError),
     });
+    if (accessBlockedError) throw accessBlockedError;
     throw fallbackError;
   }
 }
@@ -440,15 +631,25 @@ async function getVideoMetadata(url) {
 async function searchYoutubeVideo(query) {
   const q = String(query || '').trim();
   if (!q) throw new Error('Tu khoa tim kiem dang trong.');
+  assertYoutubeAccessAvailable();
   logger.info('Searching YouTube video.', { query: q });
 
-  const result = await ytDlp(`ytsearch1:${q}`, {
-    dumpSingleJson: true,
-    jsRuntimes: 'node',
-    noWarnings: true,
-    skipDownload: true,
-    defaultSearch: 'ytsearch',
-  });
+  let result;
+  try {
+    result = await ytDlp(`ytsearch1:${q}`, buildYtDlpOptions({
+      dumpSingleJson: true,
+      noWarnings: true,
+      skipDownload: true,
+      defaultSearch: 'ytsearch',
+    }));
+  } catch (error) {
+    const accessBlockedError = openYoutubeAccessCircuit(error, 'yt-dlp');
+    logger.warn('YouTube search failed.', {
+      query: q,
+      error: summarizeProviderError(error),
+    });
+    throw accessBlockedError || buildProviderError('yt-dlp', error.message, getErrorText(error));
+  }
 
   const item = result?.entries?.[0] || result;
   if (!item) {
@@ -560,7 +761,7 @@ function mapPlaylistEntries(entries) {
 
 function getErrorText(error) {
   if (!error) return '';
-  return [error.stderr, error.shortMessage, error.message]
+  return [error.stderr, error.shortMessage, error.message, error.detail]
     .filter(Boolean)
     .map((part) => String(part))
     .join(' | ');
@@ -573,13 +774,12 @@ function isUnviewablePlaylistError(error) {
 
 async function fetchYoutubePlaylistTracksWithYtDlp(canonical) {
   logger.info('Fetching playlist via yt-dlp.', { canonical });
-  const json = await ytDlp(canonical, {
+  const json = await ytDlp(canonical, buildYtDlpOptions({
     dumpSingleJson: true,
-    jsRuntimes: 'node',
     noWarnings: true,
     skipDownload: true,
     flatPlaylist: true,
-  });
+  }));
 
   const tracks = mapPlaylistEntries(Array.isArray(json?.entries) ? json.entries : []);
   if (tracks.length === 0) {
@@ -637,7 +837,7 @@ async function buildSeedVideoFallbackPlaylist(seedVideoId) {
   } catch (error) {
     logger.warn('Seed video metadata fallback failed; returning minimal single-track playlist.', {
       url,
-      error,
+      error: summarizeProviderError(error),
     });
     return {
       title: 'YouTube Mix',
@@ -661,6 +861,7 @@ function buildPlaylistFetchError(error, sawUnviewableError = false) {
 
 async function fetchYoutubePlaylistTracks(playlistUrl) {
   const { canonical, seedVideoId } = parseYoutubePlaylistInput(playlistUrl);
+  assertYoutubeAccessAvailable();
   let lastError = null;
   let sawUnviewableError = false;
 
@@ -674,29 +875,31 @@ async function fetchYoutubePlaylistTracks(playlistUrl) {
   try {
     return await fetchYoutubePlaylistTracksWithYtDlp(canonical);
   } catch (error) {
+    const accessBlockedError = openYoutubeAccessCircuit(error, 'yt-dlp');
     lastError = error;
     sawUnviewableError = sawUnviewableError || isUnviewablePlaylistError(error);
     logger.warn('yt-dlp playlist fetch failed; falling back to play-dl.', {
       canonical,
-      fallbackTo: 'play-dl',
+      fallbackTo: accessBlockedError ? null : 'play-dl',
       sawUnviewableError,
-      error,
-      errorText: getErrorText(error),
+      error: summarizeProviderError(error),
     });
+    if (accessBlockedError) throw accessBlockedError;
   }
 
   try {
     return await fetchYoutubePlaylistTracksWithPlayDl(canonical);
   } catch (error) {
+    const accessBlockedError = openYoutubeAccessCircuit(error, 'play-dl');
     lastError = error;
     sawUnviewableError = sawUnviewableError || isUnviewablePlaylistError(error);
     logger.warn('play-dl playlist fetch failed.', {
       canonical,
       sawUnviewableError,
       seedVideoId,
-      error,
-      errorText: getErrorText(error),
+      error: summarizeProviderError(error),
     });
+    if (accessBlockedError) throw accessBlockedError;
   }
 
   if (seedVideoId && sawUnviewableError) {
@@ -711,13 +914,13 @@ async function fetchYoutubePlaylistTracks(playlistUrl) {
     canonical,
     seedVideoId,
     sawUnviewableError,
-    error: lastError,
-    errorText: getErrorText(lastError),
+    error: summarizeProviderError(lastError),
   });
   throw buildPlaylistFetchError(lastError, sawUnviewableError);
 }
 
 module.exports = {
+  classifyPlayInput,
   createYoutubeAudioResource,
   fetchYoutubePlaylistTracks,
   getVideoMetadata,
