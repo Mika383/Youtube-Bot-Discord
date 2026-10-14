@@ -1,4 +1,9 @@
-const { EmbedBuilder } = require('discord.js');
+const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+} = require('discord.js');
 const { formatDuration, truncateText } = require('../utils/format');
 const { createLogger } = require('../utils/logger');
 const {
@@ -11,78 +16,43 @@ const {
   BTN_SKIP,
   BTN_STOP,
 } = require('../services/nowPlayingPanel');
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
 const logger = createLogger('interaction');
-const PLAYLIST_DELETE_CONFIRM = 'playlist_delete_confirm';
-const PLAYLIST_DELETE_CANCEL = 'playlist_delete_cancel';
-
-function buildPlaylistDeleteConfirmation(userId, playlist) {
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`${PLAYLIST_DELETE_CONFIRM}:${userId}:${playlist.key}`)
-      .setStyle(ButtonStyle.Danger)
-      .setLabel('Xóa'),
-    new ButtonBuilder()
-      .setCustomId(`${PLAYLIST_DELETE_CANCEL}:${userId}`)
-      .setStyle(ButtonStyle.Secondary)
-      .setLabel('Hủy'),
-  );
-
-  return {
-    content: `Xác nhận xóa playlist **${truncateText(playlist.name, 100)}** và ${playlist.tracks.length} bài bên trong?`,
-    components: [row],
-    ephemeral: true,
-  };
-}
 
 function buildRingoHelpEmbed() {
   return new EmbedBuilder()
     .setColor(0x5865f2)
-    .setTitle('/ringo - Huong Dan Lenh Bot')
-    .setDescription('Danh sach toan bo lenh hien co va cach dung nhanh.')
+    .setTitle('/ringo - Hướng dẫn lệnh bot')
+    .setDescription('Danh sách toàn bộ lệnh hiện có và cách dùng nhanh.')
     .addFields(
       {
-        name: 'Music',
+        name: 'Phát nhạc',
         value: [
-          '`/play input:<ten hoac URL> [infinite]`: Tu dong tim bai, phat video hoac playlist YouTube.',
-          '`/myplaylist play name:<ten> [infinite]`: Phat playlist da luu cua ban.',
-          '`/skip`: Bo qua bai hien tai.',
-          '`/shuffle`: Bật hoặc tắt chế độ Shuffle.',
-          '`/stop`: Dung phat, xoa queue, ngat voice.',
-          '`/kill`: Huy phat nhac va roi voice channel ngay lap tuc o bat ki dau.',
-          '`/queue`: Xem queue hien tai.',
-          '`/leave`: Bot roi voice channel.',
-          '`/present`: Ve lai UI Now Playing khi panel bi loi/mat.',
+          '`/play input:<tên hoặc URL> [infinite]`: Tự động tìm bài, phát video hoặc playlist YouTube.',
+          '`/playlist`: Mở bảng quản lý và phát playlist cá nhân.',
+          '`/skip`: Bỏ qua bài hiện tại.',
+          '`/shuffle`: Bật hoặc tắt chế độ trộn bài.',
+          '`/stop`: Dừng phát, xóa hàng chờ và rời kênh thoại.',
+          '`/kill`: Hủy phiên phát và rời kênh thoại ngay lập tức.',
+          '`/queue`: Xem hàng chờ hiện tại.',
+          '`/leave`: Cho bot rời kênh thoại.',
+          '`/present`: Hiển thị lại bảng điều khiển đang phát.',
         ].join('\n'),
       },
       {
-        name: 'Playlist Create',
+        name: 'Playlist cá nhân',
         value: [
-          '`/createplaylist create name:<ten>` hoac `/cpl create ...`: Tao playlist.',
-          '`/createplaylist import name:<ten> url:<playlist_url>`: Tao playlist tu YouTube playlist.',
-          '`/createplaylist delete name:<ten>` hoac `/cpl delete ...`: Xoa playlist.',
-          '`/createplaylist rename name:<cu> new_name:<moi>` hoac `/cpl rename ...`: Doi ten.',
+          '`/playlist`: Mở bảng quản lý riêng tư.',
+          'Tạo, đổi tên, nhập YouTube và thêm URL bằng biểu mẫu.',
+          'Phát, lặp vô hạn, xóa bài và lưu hàng chờ ngay trên bảng.',
         ].join('\n'),
       },
       {
-        name: 'Playlist Use',
-        value: [
-          '`/myplaylist panel` hoac `/mpl panel`: Mo UI quan ly playlist.',
-          '`/myplaylist list` hoac `/mpl list`: Liet ke playlist cua ban.',
-          '`/myplaylist view name:<ten>`: Xem bai trong playlist.',
-          '`/myplaylist add name:<ten> url:<youtube_url>`: Them bai vao playlist.',
-          '`/myplaylist remove name:<ten> index:<so>`: Xoa bai theo vi tri.',
-          '`/myplaylist play name:<ten> [infinite]`: Play playlist/lap vo han.',
-          '`/myplaylist savequeue name:<ten> [mode]`: Luu bai dang phat + queue vao playlist.',
-        ].join('\n'),
-      },
-      {
-        name: 'Luu y quyen han',
-        value: 'Playlist gan theo tai khoan Discord. User khac khong the sua/xoa playlist cua ban.',
+        name: 'Lưu ý về quyền sở hữu',
+        value: 'Playlist gắn với tài khoản Discord. Người khác không thể sửa hoặc xóa playlist của bạn.',
       },
     )
-    .setFooter({ text: 'Tip: Mo /mpl panel de thao tac playlist bang nut va select menu.' })
+    .setFooter({ text: 'Mẹo: Dùng /playlist để quản lý toàn bộ playlist cá nhân.' })
     .setTimestamp(new Date());
 }
 
@@ -130,7 +100,7 @@ function buildQueueComponents(currentPage, totalPages) {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`queue_prev_${currentPage - 1}`)
-      .setLabel('Trang truoc')
+      .setLabel('Trang trước')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(currentPage <= 1),
     new ButtonBuilder()
@@ -204,258 +174,229 @@ function createInteractionHandler({
     );
   }
 
-  async function handleCreatePlaylistCommands(interaction) {
-    const sub = interaction.options.getSubcommand();
-    const userId = interaction.user.id;
-    logger.info('Handling createplaylist subcommand.', buildInteractionMeta(interaction, { sub }));
+  async function requirePlaylistPanelState(interaction, ownerId) {
+    if (!ownerId || interaction.user.id !== ownerId) {
+      await interaction.reply({ content: 'Đây không phải bảng quản lý playlist của bạn.', ephemeral: true });
+      return null;
+    }
 
-    if (sub === 'create') {
-      const name = interaction.options.getString('name', true);
-      const created = playlistStore.createPlaylist(userId, name);
-      logger.info('Playlist created.', buildInteractionMeta(interaction, {
+    const messageId = interaction.message?.id || null;
+    const state = messageId ? playlistPanelService.getState(messageId) : null;
+    if (!state || state.ownerId !== ownerId) {
+      await interaction.reply({
+        content: 'Bảng quản lý này đã hết hạn. Hãy dùng `/playlist` để mở bảng mới.',
+        ephemeral: true,
+      });
+      return null;
+    }
+
+    return state;
+  }
+
+  async function renderPlaylistPanel(interaction, ownerId, guildState, selectedKey, note = null, trackPage = 0) {
+    const panel = playlistPanelService.buildPlaylistPanelPayload(
+      ownerId,
+      selectedKey,
+      guildState,
+      note,
+      trackPage,
+    );
+
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(panel.payload);
+    } else if (interaction.isMessageComponent?.()
+      || (interaction.isModalSubmit?.() && interaction.isFromMessage?.())) {
+      await interaction.update(panel.payload);
+    } else {
+      await interaction.reply({ ...panel.payload, ephemeral: true });
+    }
+
+    let messageId = interaction.message?.id || null;
+    if (!messageId) {
+      const reply = await interaction.fetchReply().catch(() => null);
+      messageId = reply?.id || null;
+    }
+    if (messageId) {
+      playlistPanelService.setState(messageId, ownerId, panel.selectedKey, panel.trackPage);
+    }
+    return panel;
+  }
+
+  async function deferPlaylistModal(interaction) {
+    if (interaction.isFromMessage?.()) {
+      await interaction.deferUpdate();
+    } else {
+      await interaction.deferReply({ ephemeral: true });
+    }
+  }
+
+  async function handlePlaylistModal(interaction) {
+    const [action, ownerId, customSelectedKey] = interaction.customId.split(':');
+    const state = await requirePlaylistPanelState(interaction, ownerId);
+    if (!state) return;
+
+    const guildState = playerService.getGuildState(interaction.guildId);
+    if (customSelectedKey && state.selectedKey !== customSelectedKey) {
+      await interaction.reply({
+        content: 'Playlist đã chọn đã thay đổi. Hãy mở lại thao tác từ bảng quản lý hiện tại.',
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await deferPlaylistModal(interaction);
+
+    if (action === ids.PL_MODAL_CREATE) {
+      const name = interaction.fields.getTextInputValue(ids.PL_INPUT_NAME);
+      const created = playlistStore.createPlaylist(ownerId, name);
+      logger.info('Playlist created from management panel.', buildInteractionMeta(interaction, {
         playlistName: created.name,
         playlistKey: created.key,
       }));
-      await interaction.reply({ content: `Da tao playlist: **${created.name}**`, ephemeral: true });
+      await renderPlaylistPanel(interaction, ownerId, guildState, created.key, `Đã tạo playlist: ${created.name}`);
       return;
     }
 
-    if (sub === 'delete') {
-      const name = interaction.options.getString('name', true);
-      const playlist = playlistStore.getPlaylistByName(userId, name);
-      if (!playlist) throw new Error('Không tìm thấy playlist.');
-      await interaction.reply(buildPlaylistDeleteConfirmation(userId, playlist));
-      return;
-    }
-
-    if (sub === 'rename') {
-      const oldName = interaction.options.getString('name', true);
-      const newName = interaction.options.getString('new_name', true);
-      const renamed = playlistStore.renamePlaylist(userId, oldName, newName);
-      logger.info('Playlist renamed.', buildInteractionMeta(interaction, {
+    if (action === ids.PL_MODAL_RENAME) {
+      const playlist = playlistStore.getPlaylistByKey(ownerId, customSelectedKey);
+      if (!playlist) throw new Error('Playlist không còn tồn tại.');
+      const newName = interaction.fields.getTextInputValue(ids.PL_INPUT_NAME);
+      const oldName = playlist.name;
+      const renamed = playlistStore.renamePlaylist(ownerId, playlist.name, newName);
+      logger.info('Playlist renamed from management panel.', buildInteractionMeta(interaction, {
         oldName,
         newName: renamed.name,
       }));
-      await interaction.reply({ content: `Da doi ten playlist thanh: **${renamed.name}**`, ephemeral: true });
+      await renderPlaylistPanel(interaction, ownerId, guildState, renamed.key, `Đã đổi tên thành: ${renamed.name}`);
       return;
     }
 
-    if (sub === 'import') {
-      await interaction.deferReply({ ephemeral: true });
-      const name = interaction.options.getString('name', true);
-      const inputUrl = interaction.options.getString('url', true);
-      logger.info('Importing YouTube playlist into local playlist.', buildInteractionMeta(interaction, {
-        playlistName: name,
-        inputUrl,
-      }));
-
-      if (playlistStore.getPlaylistByName(userId, name)) {
-        throw new Error('Playlist da ton tai. Hay dung ten khac hoac xoa playlist cu.');
+    if (action === ids.PL_MODAL_IMPORT) {
+      const name = interaction.fields.getTextInputValue(ids.PL_INPUT_NAME);
+      const inputUrl = interaction.fields.getTextInputValue(ids.PL_INPUT_URL);
+      if (playlistStore.getPlaylistByName(ownerId, name)) {
+        throw new Error('Playlist đã tồn tại. Hãy dùng tên khác hoặc xóa playlist cũ.');
       }
 
       const imported = await youtubeService.fetchYoutubePlaylistTracks(inputUrl);
-      const created = playlistStore.createPlaylist(userId, name);
+      const created = playlistStore.createPlaylist(ownerId, name);
       const cappedTracks = imported.tracks.slice(0, playlistStore.MAX_TRACKS_PER_PLAYLIST);
-      playlistStore.addTracksToPlaylist(userId, created.key, cappedTracks);
-      logger.info('Playlist import completed.', buildInteractionMeta(interaction, {
+      playlistStore.addTracksToPlaylist(ownerId, created.key, cappedTracks);
+      logger.info('YouTube playlist imported from management panel.', buildInteractionMeta(interaction, {
         playlistName: created.name,
         sourceTitle: imported.title,
         importedTrackCount: imported.tracks.length,
         storedTrackCount: cappedTracks.length,
       }));
 
-      const note = imported.tracks.length > cappedTracks.length
-        ? ` (gioi han ${playlistStore.MAX_TRACKS_PER_PLAYLIST} bai)`
+      const limitNote = imported.tracks.length > cappedTracks.length
+        ? `, giới hạn ${playlistStore.MAX_TRACKS_PER_PLAYLIST} bài`
         : '';
-      const notice = imported.notice ? `\nLuu y: ${imported.notice}` : '';
-      await interaction.editReply(
-        `Da tao playlist **${created.name}** tu **${truncateText(imported.title, 200)}** voi ${cappedTracks.length} bai${note}.${truncateText(notice, 500)}`,
+      const providerNote = imported.notice ? ` • ${imported.notice}` : '';
+      await renderPlaylistPanel(
+        interaction,
+        ownerId,
+        guildState,
+        created.key,
+        `Đã nhập ${cappedTracks.length} bài từ ${truncateText(imported.title, 150)}${limitNote}${providerNote}`,
       );
-    }
-  }
-
-  async function handleMyPlaylistCommands(interaction, guildState) {
-    const sub = interaction.options.getSubcommand();
-    const userId = interaction.user.id;
-    logger.info('Handling myplaylist subcommand.', buildInteractionMeta(interaction, {
-      sub,
-      currentTitle: guildState.current?.title || null,
-      queueLength: guildState.tracks.length,
-    }));
-
-    if (sub === 'panel') {
-      const panel = playlistPanelService.buildPlaylistPanelPayload(userId, null, guildState);
-      logger.info('Opening playlist panel.', buildInteractionMeta(interaction, { selectedKey: panel.selectedKey }));
-      await interaction.reply({ ...panel.payload, ephemeral: true });
-      const reply = await interaction.fetchReply();
-      playlistPanelService.setState(reply.id, userId, panel.selectedKey);
       return;
     }
 
-    if (sub === 'list') {
-      const playlists = playlistStore.listUserPlaylists(userId);
-      if (playlists.length === 0) {
-        await interaction.reply({ content: 'Ban chua co playlist nao. Dung /cpl create de tao playlist.', ephemeral: true });
-        return;
-      }
-      const text = playlists.map((p, i) => `${i + 1}. ${p.name} (${p.tracks.length} bai)`).join('\n');
-      await interaction.reply({ content: text, ephemeral: true });
-      return;
-    }
-
-    if (sub === 'view') {
-      const name = interaction.options.getString('name', true);
-      const playlist = playlistStore.getPlaylistByName(userId, name);
-      if (!playlist) throw new Error('Khong tim thay playlist.');
-
-      const embed = new EmbedBuilder()
-        .setColor(0x198754)
-        .setTitle(`Playlist: ${playlist.name}`)
-        .setDescription(
-          playlist.tracks.length === 0
-            ? 'Playlist dang trong.'
-            : truncateText(playlist.tracks.slice(0, 20).map((t, i) => `${i + 1}. ${truncateText(t.title, 80)}${t.durationSec ? ` (${formatDuration(t.durationSec)})` : ''}`).join('\n'), 4000),
-        )
-        .setFooter({ text: `Tong ${playlist.tracks.length} bai` })
-        .setTimestamp(new Date());
-      await interaction.reply({ embeds: [embed], ephemeral: true });
-      return;
-    }
-
-    if (sub === 'add') {
-      await interaction.deferReply({ ephemeral: true });
-      const name = interaction.options.getString('name', true);
-      const rawUrl = interaction.options.getString('url', true);
-      logger.info('Adding track to local playlist.', buildInteractionMeta(interaction, {
-        playlistName: name,
-        rawUrl,
-      }));
+    if (action === ids.PL_MODAL_ADD_URL) {
+      const rawUrl = interaction.fields.getTextInputValue(ids.PL_INPUT_URL);
       const url = youtubeService.normalizePlayableUrl(rawUrl);
-      const meta = await youtubeService.getVideoMetadata(url);
-      const playlist = playlistStore.addTrackToPlaylist(userId, name, {
+      const metadata = await youtubeService.getVideoMetadata(url);
+      const playlist = playlistStore.addTrackToPlaylist(ownerId, customSelectedKey, {
         url,
-        title: meta.title,
-        durationSec: meta.durationSec,
-        thumbnail: meta.thumbnail,
+        title: metadata.title,
+        durationSec: metadata.durationSec,
+        thumbnail: metadata.thumbnail,
       });
-      logger.info('Track added to local playlist.', buildInteractionMeta(interaction, {
+      logger.info('Track URL added from management panel.', buildInteractionMeta(interaction, {
         playlistName: playlist.name,
-        trackTitle: meta.title,
+        trackTitle: metadata.title,
         trackUrl: url,
       }));
-      await interaction.editReply(`Da them vao playlist **${playlist.name}**: ${truncateText(meta.title, 300)}`);
+      await renderPlaylistPanel(
+        interaction,
+        ownerId,
+        guildState,
+        playlist.key,
+        `Đã thêm: ${truncateText(metadata.title, 300)}`,
+        state.trackPage,
+      );
       return;
     }
 
-    if (sub === 'remove') {
-      const name = interaction.options.getString('name', true);
-      const index = interaction.options.getInteger('index', true);
-      const removed = playlistStore.removeTrackByIndex(userId, name, index);
-      await interaction.reply({ content: `Da xoa bai: ${removed.title}`, ephemeral: true });
-      return;
-    }
-
-    if (sub === 'play') {
-      await interaction.deferReply();
-      const name = interaction.options.getString('name', true);
-      const infinite = interaction.options.getBoolean('infinite') || false;
-      const playlist = playlistStore.getPlaylistByName(userId, name);
-      if (!playlist) throw new Error('Khong tim thay playlist.');
-      if (playlist.tracks.length === 0) throw new Error('Playlist dang trong.');
-      logger.info('Playing saved local playlist.', buildInteractionMeta(interaction, {
-        playlistName: playlist.name,
-        trackCount: playlist.tracks.length,
-        infinite,
-      }));
-
-      await playerService.ensureConnection(interaction, guildState);
-      playerService.enqueuePlaylistToGuildWithOptions(guildState, playlist, interaction.user.username, { shuffle: false });
-      playerService.configurePlaylistLoop(guildState, playlist, interaction.user.username, { infinite, shuffle: false });
-      if (!guildState.current) {
-        await playerService.playNext(interaction, guildState);
-      }
-      await interaction.editReply({
-        content: `Đã nạp playlist **${truncateText(playlist.name, 100)}** (${playlist.tracks.length} bài). Infinite: **${infinite ? 'BẬT' : 'TẮT'}**.`,
-      });
-      return;
-    }
-
-    if (sub === 'savequeue') {
-      const targetName = interaction.options.getString('name', true);
-      const mode = interaction.options.getString('mode') || 'replace';
-      const snapshot = getQueueSnapshot(guildState);
-      if (snapshot.length === 0) throw new Error('Queue hien tai dang trong.');
-      logger.info('Saving queue into local playlist.', buildInteractionMeta(interaction, {
-        targetName,
-        mode,
-        snapshotLength: snapshot.length,
-      }));
-
-      let playlist = playlistStore.getPlaylistByName(userId, targetName);
-      if (!playlist) {
-        playlist = playlistStore.createPlaylist(userId, targetName);
-      }
-
-      if (mode === 'append') {
-        playlist = playlistStore.addTracksToPlaylist(userId, playlist.key, snapshot);
-      } else {
-        playlist = playlistStore.replacePlaylistTracks(userId, playlist.key, snapshot);
-      }
-
-      await interaction.reply({
-        content: `Da luu ${snapshot.length} bai vao playlist **${playlist.name}** (mode: ${mode}).`,
-        ephemeral: true,
-      });
-      logger.info('Queue saved into local playlist.', buildInteractionMeta(interaction, {
-        playlistName: playlist.name,
-        mode,
-        snapshotLength: snapshot.length,
-      }));
-    }
+    throw new Error('Biểu mẫu playlist không hợp lệ.');
   }
 
   async function handleCore(interaction) {
     logger.info('Interaction received.', buildInteractionMeta(interaction));
 
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('pl_modal_')) {
+      try {
+        await handlePlaylistModal(interaction);
+      } catch (error) {
+        logger.error('Playlist modal interaction failed.', buildInteractionMeta(interaction, { error }));
+        const content = `Lỗi: ${error.message || 'không rõ nguyên nhân'}`;
+        if (interaction.deferred || interaction.replied) {
+          await interaction.followUp({ content, ephemeral: true }).catch(() => null);
+        } else {
+          await interaction.reply({ content, ephemeral: true }).catch(() => null);
+        }
+      }
+      return;
+    }
+
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith(`${ids.PL_SELECT}:`)) {
       const ownerId = interaction.customId.split(':')[1];
-      if (interaction.user.id !== ownerId) {
-        logger.warn('Rejected playlist select interaction because owner did not match.', buildInteractionMeta(interaction, { ownerId }));
-        await interaction.reply({ content: 'Day khong phai playlist panel cua ban.', ephemeral: true });
-        return;
-      }
+      const state = await requirePlaylistPanelState(interaction, ownerId);
+      if (!state) return;
 
       const guildState = playerService.getGuildState(interaction.guildId);
       const selectedKey = interaction.values[0];
+      if (!playlistStore.getPlaylistByKey(ownerId, selectedKey)) {
+        await interaction.reply({ content: 'Playlist đã chọn không còn tồn tại.', ephemeral: true });
+        return;
+      }
       logger.info('Playlist select menu changed.', buildInteractionMeta(interaction, { selectedKey }));
-      const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState);
-      playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
-      await interaction.update(panel.payload);
+      await renderPlaylistPanel(interaction, ownerId, guildState, selectedKey);
       return;
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith(`${ids.PL_TRACK_REMOVE_SELECT}:`)) {
       const ownerId = interaction.customId.split(':')[1];
-      if (interaction.user.id !== ownerId) {
-        logger.warn('Rejected playlist remove-track interaction because owner did not match.', buildInteractionMeta(interaction, { ownerId }));
-        await interaction.reply({ content: 'Day khong phai playlist panel cua ban.', ephemeral: true });
-        return;
-      }
+      const state = await requirePlaylistPanelState(interaction, ownerId);
+      if (!state) return;
 
       const guildState = playerService.getGuildState(interaction.guildId);
-      const state = playlistPanelService.getState(interaction.message.id) || { ownerId, selectedKey: null };
-      const selectedKey = state.selectedKey || playlistStore.listUserPlaylists(ownerId)[0]?.key || null;
+      const selectedKey = state.selectedKey;
       if (!selectedKey) {
-        await interaction.reply({ content: 'Ban chua co playlist de thao tac.', ephemeral: true });
+        await interaction.reply({ content: 'Bạn chưa có playlist để thao tác.', ephemeral: true });
         return;
       }
 
       const index = Number(interaction.values[0]);
       logger.info('Playlist remove-track menu used.', buildInteractionMeta(interaction, { selectedKey, index }));
-      const removed = playlistStore.removeTrackByIndex(ownerId, selectedKey, index);
-      const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState, `Da xoa: ${removed.title}`);
-      playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
-      await interaction.update(panel.payload);
+      try {
+        const removed = playlistStore.removeTrackByIndex(ownerId, selectedKey, index);
+        await renderPlaylistPanel(
+          interaction,
+          ownerId,
+          guildState,
+          selectedKey,
+          `Đã xóa: ${removed.title}`,
+          state.trackPage,
+        );
+      } catch (error) {
+        logger.error('Playlist remove-track interaction failed.', buildInteractionMeta(interaction, { error }));
+        await interaction.reply({
+          content: `Lỗi: ${error.message || 'không rõ nguyên nhân'}`,
+          ephemeral: true,
+        }).catch(() => null);
+      }
       return;
     }
 
@@ -467,36 +408,6 @@ function createInteractionHandler({
       }));
 
       try {
-        if (interaction.customId.startsWith(`${PLAYLIST_DELETE_CONFIRM}:`)) {
-          const [, ownerId, playlistKey] = interaction.customId.split(':');
-          if (interaction.user.id !== ownerId) {
-            await interaction.reply({ content: 'Đây không phải xác nhận của bạn.', ephemeral: true });
-            return;
-          }
-          const playlist = playlistStore.getPlaylistByKey(ownerId, playlistKey);
-          if (!playlist) throw new Error('Playlist không còn tồn tại.');
-          playlistStore.deletePlaylist(ownerId, playlistKey);
-          logger.info('Playlist deleted after confirmation.', buildInteractionMeta(interaction, {
-            playlistName: playlist.name,
-            playlistKey,
-          }));
-          await interaction.update({
-            content: `Đã xóa playlist **${truncateText(playlist.name, 100)}**.`,
-            components: [],
-          });
-          return;
-        }
-
-        if (interaction.customId.startsWith(`${PLAYLIST_DELETE_CANCEL}:`)) {
-          const [, ownerId] = interaction.customId.split(':');
-          if (interaction.user.id !== ownerId) {
-            await interaction.reply({ content: 'Đây không phải xác nhận của bạn.', ephemeral: true });
-            return;
-          }
-          await interaction.update({ content: 'Đã hủy thao tác xóa playlist.', components: [] });
-          return;
-        }
-
         if (interaction.customId === BTN_QUEUE) {
           const { embed, totalPages, currentPage } = buildQueueEmbed(guildState);
           await interaction.reply({
@@ -519,7 +430,7 @@ function createInteractionHandler({
           && guildState.panelMessageId
           && interaction.message.id !== guildState.panelMessageId) {
           await interaction.reply({
-            content: 'Panel này đã cũ. Hãy dùng bảng điều khiển mới nhất hoặc `/present`.',
+            content: 'Bảng điều khiển này đã cũ. Hãy dùng bảng mới nhất hoặc `/present`.',
             ephemeral: true,
           });
           return;
@@ -527,7 +438,7 @@ function createInteractionHandler({
 
         if (interaction.customId === BTN_SHUFFLE_INFINITE) {
           await interaction.reply({
-            content: 'Nút này đã được thay thế. Hãy dùng riêng `🔀` và `🔁` trên panel mới.',
+            content: 'Nút này đã được thay thế. Hãy dùng riêng `🔀` và `🔁` trên bảng điều khiển mới.',
             ephemeral: true,
           });
           return;
@@ -539,7 +450,7 @@ function createInteractionHandler({
 
         if (interaction.customId === BTN_PAUSE_RESUME) {
           if (!guildState.current) {
-            await interaction.reply({ content: 'Khong co bai nao dang phat.', ephemeral: true });
+            await interaction.reply({ content: 'Không có bài nào đang phát.', ephemeral: true });
             return;
           }
 
@@ -547,12 +458,12 @@ function createInteractionHandler({
             guildState.player.unpause();
             guildState.isPaused = false;
             guildState.currentStartedAtMs = Date.now() - guildState.pausedElapsedMs;
-            await interaction.reply({ content: 'Da tiep tuc phat.', ephemeral: true });
+            await interaction.reply({ content: 'Đã tiếp tục phát.', ephemeral: true });
           } else {
             guildState.player.pause(true);
             guildState.isPaused = true;
             guildState.pausedElapsedMs = Math.max(0, Date.now() - guildState.currentStartedAtMs);
-            await interaction.reply({ content: 'Da tam dung.', ephemeral: true });
+            await interaction.reply({ content: 'Đã tạm dừng.', ephemeral: true });
           }
 
           await panelService.upsertNowPlayingPanel(guildState);
@@ -561,38 +472,38 @@ function createInteractionHandler({
 
         if (interaction.customId === BTN_SKIP) {
           if (!guildState.current) {
-            await interaction.reply({ content: 'Khong co bai nao dang phat.', ephemeral: true });
+            await interaction.reply({ content: 'Không có bài nào đang phát.', ephemeral: true });
             return;
           }
           guildState.player.stop();
-          await interaction.reply({ content: 'Da skip bai hien tai.', ephemeral: true });
+          await interaction.reply({ content: 'Đã bỏ qua bài hiện tại.', ephemeral: true });
           return;
         }
 
         if (interaction.customId === BTN_PREVIOUS) {
           playerService.playPrevious(guildState);
-          await interaction.reply({ content: 'Da quay lai bai truoc.', ephemeral: true });
+          await interaction.reply({ content: 'Đã quay lại bài trước.', ephemeral: true });
           return;
         }
 
         if (interaction.customId === BTN_INFINITE) {
           const status = playerService.toggleInfiniteMode(guildState);
           await panelService.upsertNowPlayingPanel(guildState);
-          await interaction.reply({ content: `Infinite đã ${status ? 'BẬT' : 'TẮT'}.`, ephemeral: true });
+          await interaction.reply({ content: `Lặp vô hạn đã ${status ? 'BẬT' : 'TẮT'}.`, ephemeral: true });
           return;
         }
 
         if (interaction.customId === BTN_SHUFFLE) {
           const status = playerService.toggleShuffleMode(guildState);
           await panelService.upsertNowPlayingPanel(guildState);
-          await interaction.reply({ content: `Shuffle đã ${status ? 'BẬT' : 'TẮT'}.`, ephemeral: true });
+          await interaction.reply({ content: `Trộn bài đã ${status ? 'BẬT' : 'TẮT'}.`, ephemeral: true });
           return;
         }
 
         if (interaction.customId === BTN_STOP) {
           playerService.clearAndDisconnect(guildState);
           await panelService.upsertNowPlayingPanel(guildState);
-          await interaction.reply({ content: 'Da dung nhac va xoa hang cho.', ephemeral: true });
+          await interaction.reply({ content: 'Đã dừng nhạc và xóa hàng chờ.', ephemeral: true });
           return;
         }
 
@@ -609,25 +520,40 @@ function createInteractionHandler({
 
         if (interaction.customId.startsWith('pl_')) {
           const [action, ownerId] = interaction.customId.split(':');
-          if (!ownerId) throw new Error('Playlist action khong hop le.');
-          if (interaction.user.id !== ownerId) {
-            logger.warn('Rejected playlist button because owner did not match.', buildInteractionMeta(interaction, { ownerId, action }));
-            await interaction.reply({ content: 'Day khong phai playlist panel cua ban.', ephemeral: true });
+          const state = await requirePlaylistPanelState(interaction, ownerId);
+          if (!state) return;
+          const selectedKey = state.selectedKey;
+
+          if (action === ids.PL_CREATE) {
+            await interaction.showModal(playlistPanelService.buildCreateModal(ownerId));
             return;
           }
 
-          const state = playlistPanelService.getState(interaction.message.id) || { ownerId, selectedKey: null };
-          const selectedKey = state.selectedKey || playlistStore.listUserPlaylists(ownerId)[0]?.key || null;
-
-          if (action === ids.PL_REFRESH) {
-            const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState);
-            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
-            await interaction.update(panel.payload);
+          if (action === ids.PL_IMPORT) {
+            await interaction.showModal(playlistPanelService.buildImportModal(ownerId));
             return;
           }
 
           if (!selectedKey) {
-            await interaction.reply({ content: 'Ban chua co playlist de thao tac.', ephemeral: true });
+            await interaction.reply({ content: 'Bạn chưa có playlist để thao tác.', ephemeral: true });
+            return;
+          }
+
+          if (action === ids.PL_RENAME) {
+            await interaction.showModal(playlistPanelService.buildRenameModal(ownerId, selectedKey));
+            return;
+          }
+
+          if (action === ids.PL_ADD_URL) {
+            await interaction.showModal(playlistPanelService.buildAddUrlModal(ownerId, selectedKey));
+            return;
+          }
+
+          if (action === ids.PL_TRACK_PREV || action === ids.PL_TRACK_NEXT) {
+            const nextPage = action === ids.PL_TRACK_PREV
+              ? state.trackPage - 1
+              : state.trackPage + 1;
+            await renderPlaylistPanel(interaction, ownerId, guildState, selectedKey, null, nextPage);
             return;
           }
 
@@ -637,9 +563,14 @@ function createInteractionHandler({
           }
 
           if (action === ids.PL_DELETE_CANCEL) {
-            const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState, 'Đã hủy thao tác xóa.');
-            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
-            await interaction.update(panel.payload);
+            await renderPlaylistPanel(
+              interaction,
+              ownerId,
+              guildState,
+              selectedKey,
+              'Đã hủy thao tác xóa.',
+              state.trackPage,
+            );
             return;
           }
 
@@ -648,21 +579,59 @@ function createInteractionHandler({
             if (!playlist) throw new Error('Playlist không còn tồn tại.');
             playlistStore.deletePlaylist(ownerId, selectedKey);
             const fallback = playlistStore.listUserPlaylists(ownerId)[0]?.key || null;
-            const panel = playlistPanelService.buildPlaylistPanelPayload(
+            await renderPlaylistPanel(
+              interaction,
               ownerId,
-              fallback,
               guildState,
+              fallback,
               `Đã xóa playlist: ${truncateText(playlist.name, 100)}`,
             );
-            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
-            await interaction.update(panel.payload);
+            return;
+          }
+
+          if (action === ids.PL_SAVE_QUEUE) {
+            const snapshot = getQueueSnapshot(guildState);
+            if (snapshot.length === 0) throw new Error('Hàng chờ hiện tại đang trống.');
+            await interaction.update(
+              playlistPanelService.buildSaveQueueConfirmationPayload(ownerId, selectedKey, snapshot.length),
+            );
+            return;
+          }
+
+          if (action === ids.PL_SAVE_CANCEL) {
+            await renderPlaylistPanel(
+              interaction,
+              ownerId,
+              guildState,
+              selectedKey,
+              'Đã hủy thao tác lưu hàng chờ.',
+              state.trackPage,
+            );
+            return;
+          }
+
+          if (action === ids.PL_SAVE_REPLACE || action === ids.PL_SAVE_APPEND) {
+            const snapshot = getQueueSnapshot(guildState);
+            if (snapshot.length === 0) throw new Error('Hàng chờ hiện tại đang trống.');
+            const append = action === ids.PL_SAVE_APPEND;
+            const updated = append
+              ? playlistStore.addTracksToPlaylist(ownerId, selectedKey, snapshot)
+              : playlistStore.replacePlaylistTracks(ownerId, selectedKey, snapshot);
+            await renderPlaylistPanel(
+              interaction,
+              ownerId,
+              guildState,
+              updated.key,
+              `Đã ${append ? 'nối thêm' : 'ghi đè'} ${snapshot.length} bài vào ${updated.name}.`,
+              state.trackPage,
+            );
             return;
           }
 
           if (action === ids.PL_PLAY || action === ids.PL_PLAY_INFINITE) {
             await interaction.deferUpdate();
             const playlist = playlistStore.getPlaylistByKey(ownerId, selectedKey);
-            if (!playlist || playlist.tracks.length === 0) throw new Error('Playlist dang trong.');
+            if (!playlist || playlist.tracks.length === 0) throw new Error('Playlist đang trống.');
             const infinite = action === ids.PL_PLAY_INFINITE;
             logger.info('Playlist panel requested playback.', buildInteractionMeta(interaction, {
               selectedKey,
@@ -678,50 +647,36 @@ function createInteractionHandler({
               await playerService.playNext(null, guildState);
             }
 
-            const panel = playlistPanelService.buildPlaylistPanelPayload(
+            await renderPlaylistPanel(
+              interaction,
               ownerId,
-              selectedKey,
               guildState,
-              `Da nap playlist ${playlist.name}. Infinite: ${infinite ? 'ON' : 'OFF'}.`,
+              selectedKey,
+              `Đã nạp playlist ${playlist.name}. Lặp vô hạn: ${infinite ? 'BẬT' : 'TẮT'}.`,
+              state.trackPage,
             );
-            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
-            await interaction.editReply(panel.payload);
             return;
           }
 
           if (action === ids.PL_ADD_CURRENT) {
-            if (!guildState.current) throw new Error('Khong co bai dang phat de them.');
-            playlistStore.addTrackToPlaylist(ownerId, selectedKey, guildState.current);
-            const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState, `Da them: ${guildState.current.title}`);
-            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
-            await interaction.update(panel.payload);
+            if (!guildState.current) throw new Error('Không có bài đang phát để thêm.');
+            const updated = playlistStore.addTrackToPlaylist(ownerId, selectedKey, guildState.current);
+            await renderPlaylistPanel(
+              interaction,
+              ownerId,
+              guildState,
+              updated.key,
+              `Đã thêm: ${guildState.current.title}`,
+              state.trackPage,
+            );
             return;
           }
 
-          if (action === ids.PL_REMOVE_LAST) {
-            const removed = playlistStore.removeLastTrack(ownerId, selectedKey);
-            const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState, `Da xoa: ${removed.title}`);
-            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
-            await interaction.update(panel.payload);
-            return;
-          }
-
-          if (action === ids.PL_SAVE_QUEUE) {
-            const playlist = playlistStore.getPlaylistByKey(ownerId, selectedKey);
-            if (!playlist) throw new Error('Khong tim thay playlist.');
-            const snapshot = getQueueSnapshot(guildState);
-            if (snapshot.length === 0) throw new Error('Queue hien tai dang trong.');
-            const updated = playlistStore.replacePlaylistTracks(ownerId, selectedKey, snapshot);
-            const panel = playlistPanelService.buildPlaylistPanelPayload(ownerId, selectedKey, guildState, `Da save ${snapshot.length} bai vao ${updated.name}`);
-            playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
-            await interaction.update(panel.payload);
-            return;
-          }
-
+          throw new Error('Thao tác playlist không hợp lệ.');
         }
       } catch (error) {
         logger.error('Button interaction failed.', buildInteractionMeta(interaction, { error }));
-        const content = `Loi: ${error.message || 'khong ro nguyen nhan'}`;
+        const content = `Lỗi: ${error.message || 'không rõ nguyên nhân'}`;
         if (interaction.deferred || interaction.replied) {
           await interaction.followUp({ content, ephemeral: true }).catch(() => null);
         } else {
@@ -747,7 +702,7 @@ function createInteractionHandler({
         const infinite = interaction.options.getBoolean('infinite') || false;
         const resolvedInput = youtubeService.classifyPlayInput(input);
         if (infinite && resolvedInput.type !== 'playlist') {
-          throw new Error('Tuy chon infinite chi dung cho URL playlist YouTube.');
+          throw new Error('Tùy chọn lặp vô hạn chỉ dùng cho URL playlist YouTube.');
         }
 
         // Voice negotiation and YouTube resolution are independent. Start both as
@@ -774,11 +729,11 @@ function createInteractionHandler({
           }));
           const ytPlaylist = await youtubeService.fetchYoutubePlaylistTracks(resolvedInput.url);
           if (!ytPlaylist || ytPlaylist.tracks.length === 0) {
-            throw new Error('Playlist YouTube khong co bai hop le de phat.');
+            throw new Error('Playlist YouTube không có bài hợp lệ để phát.');
           }
 
           const virtualPlaylist = {
-            name: ytPlaylist.title || 'YouTube Playlist',
+            name: ytPlaylist.title || 'Playlist YouTube',
             tracks: ytPlaylist.tracks,
           };
 
@@ -791,7 +746,7 @@ function createInteractionHandler({
           }
 
           await interaction.editReply({
-            content: `Đã nạp YouTube playlist **${truncateText(virtualPlaylist.name, 100)}** (${virtualPlaylist.tracks.length} bài). Infinite: **${infinite ? 'BẬT' : 'TẮT'}**.${ytPlaylist.notice ? `\nLưu ý: ${truncateText(ytPlaylist.notice, 500)}` : ''}`,
+            content: `Đã nạp YouTube playlist **${truncateText(virtualPlaylist.name, 100)}** (${virtualPlaylist.tracks.length} bài). Lặp vô hạn: **${infinite ? 'BẬT' : 'TẮT'}**.${ytPlaylist.notice ? `\nLưu ý: ${truncateText(ytPlaylist.notice, 500)}` : ''}`,
           });
           return;
         }
@@ -841,11 +796,11 @@ function createInteractionHandler({
         logger.info('Handling /skip command.', buildInteractionMeta(interaction));
         playerService.requireSameVoiceChannel(interaction, guildState);
         if (!guildState.current) {
-          await interaction.reply({ content: 'Khong co bai nao dang phat.', ephemeral: true });
+          await interaction.reply({ content: 'Không có bài nào đang phát.', ephemeral: true });
           return;
         }
         guildState.player.stop();
-        await interaction.reply('Da skip bai hien tai.');
+        await interaction.reply('Đã bỏ qua bài hiện tại.');
         return;
       }
 
@@ -854,7 +809,7 @@ function createInteractionHandler({
         playerService.requireSameVoiceChannel(interaction, guildState);
         playerService.clearAndDisconnect(guildState);
         await panelService.upsertNowPlayingPanel(guildState);
-        await interaction.reply('Da dung nhac va xoa hang cho.');
+        await interaction.reply('Đã dừng nhạc và xóa hàng chờ.');
         return;
       }
 
@@ -863,7 +818,7 @@ function createInteractionHandler({
         playerService.requireSameVoiceChannel(interaction, guildState);
         playerService.clearAndDisconnect(guildState);
         await panelService.upsertNowPlayingPanel(guildState);
-        await interaction.reply('Da huy phat nhac va roi voice channel ngay lap tuc.');
+        await interaction.reply('Đã hủy phát nhạc và rời kênh thoại ngay lập tức.');
         return;
       }
 
@@ -882,14 +837,14 @@ function createInteractionHandler({
         playerService.requireSameVoiceChannel(interaction, guildState);
         const status = playerService.toggleShuffleMode(guildState);
         await panelService.upsertNowPlayingPanel(guildState);
-        await interaction.reply(`Shuffle đã ${status ? 'BẬT' : 'TẮT'}.`);
+        await interaction.reply(`Trộn bài đã ${status ? 'BẬT' : 'TẮT'}.`);
         return;
       }
 
       if (interaction.commandName === 'present') {
         logger.info('Handling /present command.', buildInteractionMeta(interaction));
         if (!hasPlayerPanelOrSession(guildState)) {
-          throw new Error('Chua co player de dua xuong vi tri moi nhat.');
+          throw new Error('Chưa có trình phát để đưa xuống vị trí mới nhất.');
         }
         await interaction.deferReply({ ephemeral: true });
         await interaction.editReply({ content: 'Đã đưa bảng điều khiển xuống vị trí mới nhất.' });
@@ -901,19 +856,18 @@ function createInteractionHandler({
         playerService.requireSameVoiceChannel(interaction, guildState);
         playerService.clearAndDisconnect(guildState);
         await panelService.upsertNowPlayingPanel(guildState);
-        await interaction.reply('Da roi voice channel.');
+        await interaction.reply('Đã rời kênh thoại.');
         return;
       }
 
-      if (interaction.commandName === 'createplaylist' || interaction.commandName === 'cpl') {
-        logger.info('Handling create playlist command family.', buildInteractionMeta(interaction));
-        await handleCreatePlaylistCommands(interaction);
-        return;
-      }
-
-      if (interaction.commandName === 'myplaylist' || interaction.commandName === 'mpl') {
-        logger.info('Handling myplaylist command family.', buildInteractionMeta(interaction));
-        await handleMyPlaylistCommands(interaction, guildState);
+      if (interaction.commandName === 'playlist') {
+        const panel = playlistPanelService.buildPlaylistPanelPayload(interaction.user.id, null, guildState);
+        logger.info('Opening unified playlist management panel.', buildInteractionMeta(interaction, {
+          selectedKey: panel.selectedKey,
+        }));
+        await interaction.reply({ ...panel.payload, ephemeral: true });
+        const reply = await interaction.fetchReply();
+        playlistPanelService.setState(reply.id, interaction.user.id, panel.selectedKey, panel.trackPage);
         return;
       }
 

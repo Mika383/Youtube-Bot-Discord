@@ -171,7 +171,7 @@ function createPlayerService({ youtubeService, panelService, client }) {
         ? shuffleArray([...guildState.queueInfiniteTemplate])
         : guildState.queueInfiniteTemplate;
       guildState.tracks.push(
-        ...template.map((track) => mapTrackForQueue(track, track.requestedBy || 'Infinite Queue')),
+        ...template.map((track) => mapTrackForQueue(track, track.requestedBy || 'Hàng chờ lặp vô hạn')),
       );
     }
 
@@ -184,7 +184,7 @@ function createPlayerService({ youtubeService, panelService, client }) {
         ? shuffleArray([...guildState.playlistLoopTemplate])
         : [...guildState.playlistLoopTemplate];
       guildState.tracks.push(
-        ...loopTracks.map((track) => mapTrackForQueue(track, guildState.playlistLoopRequestedBy || 'Playlist Loop')),
+        ...loopTracks.map((track) => mapTrackForQueue(track, guildState.playlistLoopRequestedBy || 'Lặp playlist')),
       );
     }
 
@@ -263,8 +263,8 @@ function createPlayerService({ youtubeService, panelService, client }) {
     if (lastStreamError) {
       const playbackError = new Error(
         failedTrackCount > 1
-          ? `Khong the phat ${failedTrackCount} bai trong hang cho luc nay.`
-          : 'Khong the phat bai nay luc nay. Vui long thu lai sau.',
+          ? `Không thể phát ${failedTrackCount} bài trong hàng chờ lúc này.`
+          : 'Không thể phát bài này lúc này. Vui lòng thử lại sau.',
       );
       playbackError.code = 'PLAYBACK_UNAVAILABLE';
       playbackError.cause = lastStreamError;
@@ -281,7 +281,7 @@ function createPlayerService({ youtubeService, panelService, client }) {
       title: track.title,
       durationSec: track.durationSec || 0,
       thumbnail: track.thumbnail || null,
-      requestedBy: track.requestedBy || 'Infinite Queue',
+      requestedBy: track.requestedBy || 'Hàng chờ lặp vô hạn',
     }));
   }
 
@@ -298,7 +298,7 @@ function createPlayerService({ youtubeService, panelService, client }) {
 
     const snapshot = snapshotQueueForInfinite(guildState);
     if (snapshot.length === 0) {
-      throw new Error('Khong co bai de bat che do infinite.');
+      throw new Error('Không có bài để bật chế độ lặp vô hạn.');
     }
 
     guildState.queueInfiniteMode = true;
@@ -319,7 +319,7 @@ function createPlayerService({ youtubeService, panelService, client }) {
     }
 
     if (!guildState.current && guildState.tracks.length === 0) {
-      throw new Error('Không có bài để bật Shuffle.');
+      throw new Error('Không có bài để bật chế độ trộn bài.');
     }
 
     guildState.shuffleMode = true;
@@ -333,7 +333,7 @@ function createPlayerService({ youtubeService, panelService, client }) {
 
   function playPrevious(guildState) {
     if (!guildState.history || guildState.history.length === 0) {
-      throw new Error('Khong co bai truoc do.');
+      throw new Error('Không có bài trước đó.');
     }
 
     const previous = guildState.history.pop();
@@ -355,12 +355,12 @@ function createPlayerService({ youtubeService, panelService, client }) {
         userId: interaction.user?.id || null,
         guildId: interaction.guild?.id || guildState.guildId,
       }));
-      throw new Error('Ban phai vao voice channel truoc da.');
+      throw new Error('Bạn phải vào kênh thoại trước.');
     }
 
     const connectedChannelId = guildState.connection?.joinConfig?.channelId || null;
     if (connectedChannelId && connectedChannelId !== memberChannel.id) {
-      throw new Error('Bạn phải vào cùng voice channel với bot để điều khiển phát nhạc.');
+      throw new Error('Bạn phải vào cùng kênh thoại với bot để điều khiển phát nhạc.');
     }
 
     if (guildState.connection?.state?.status === VoiceConnectionStatus.Destroyed) {
@@ -462,7 +462,7 @@ function createPlayerService({ youtubeService, panelService, client }) {
       logger.warn('Voice channel validation failed because bot is not connected.', buildGuildMeta(guildState, {
         userId: interaction.user?.id || null,
       }));
-      throw new Error('Bot chua o trong voice channel nao.');
+      throw new Error('Bot chưa ở trong kênh thoại nào.');
     }
 
     if (!userChannelId || userChannelId !== botChannelId) {
@@ -471,7 +471,7 @@ function createPlayerService({ youtubeService, panelService, client }) {
         userChannelId: userChannelId || null,
         botChannelId,
       }));
-      throw new Error('Ban phai vao cung voice channel voi bot de dung nut nay.');
+      throw new Error('Bạn phải vào cùng kênh thoại với bot để dùng nút này.');
     }
   }
 

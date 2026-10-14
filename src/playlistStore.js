@@ -35,9 +35,9 @@ function playlistKey(name) {
 
 function assertPlaylistName(name) {
   const normalized = normalizePlaylistName(name);
-  if (!normalized) throw new Error('Ten playlist khong duoc de trong.');
+  if (!normalized) throw new Error('Tên playlist không được để trống.');
   if (normalized.length > MAX_PLAYLIST_NAME_LENGTH) {
-    throw new Error(`Ten playlist toi da ${MAX_PLAYLIST_NAME_LENGTH} ky tu.`);
+    throw new Error(`Tên playlist tối đa ${MAX_PLAYLIST_NAME_LENGTH} ký tự.`);
   }
   if (!/^[\p{L}\p{N}\s_-]+$/u.test(normalized)) {
     throw new Error('Tên playlist chỉ được dùng chữ, số, dấu cách, dấu gạch ngang hoặc gạch dưới.');
@@ -69,9 +69,9 @@ function createPlaylist(userId, name) {
   const key = playlistKey(normalized);
   const map = getUserPlaylistMap(userId, true);
 
-  if (map[key]) throw new Error('Playlist da ton tai.');
+  if (map[key]) throw new Error('Playlist đã tồn tại.');
   if (Object.keys(map).length >= MAX_PLAYLISTS_PER_USER) {
-    throw new Error(`Moi user toi da ${MAX_PLAYLISTS_PER_USER} playlist.`);
+    throw new Error(`Mỗi người dùng được tạo tối đa ${MAX_PLAYLISTS_PER_USER} playlist.`);
   }
 
   map[key] = {
@@ -87,7 +87,7 @@ function createPlaylist(userId, name) {
 function deletePlaylist(userId, nameOrKey) {
   const map = getUserPlaylistMap(userId);
   const key = map[nameOrKey] ? nameOrKey : playlistKey(nameOrKey);
-  if (!map[key]) throw new Error('Khong tim thay playlist.');
+  if (!map[key]) throw new Error('Không tìm thấy playlist.');
   delete map[key];
   saveStore();
 }
@@ -96,11 +96,11 @@ function renamePlaylist(userId, oldName, newName) {
   const oldKey = playlistKey(oldName);
   const map = getUserPlaylistMap(userId);
   const playlist = map[oldKey];
-  if (!playlist) throw new Error('Khong tim thay playlist can doi ten.');
+  if (!playlist) throw new Error('Không tìm thấy playlist cần đổi tên.');
 
   const normalizedNew = assertPlaylistName(newName);
   const newKey = playlistKey(normalizedNew);
-  if (oldKey !== newKey && map[newKey]) throw new Error('Ten moi da ton tai.');
+  if (oldKey !== newKey && map[newKey]) throw new Error('Tên mới đã tồn tại.');
 
   delete map[oldKey];
   playlist.key = newKey;
@@ -114,9 +114,9 @@ function addTrackToPlaylist(userId, playlistNameOrKey, track) {
   const map = getUserPlaylistMap(userId);
   const key = map[playlistNameOrKey] ? playlistNameOrKey : playlistKey(playlistNameOrKey);
   const playlist = map[key];
-  if (!playlist) throw new Error('Khong tim thay playlist.');
+  if (!playlist) throw new Error('Không tìm thấy playlist.');
   if (playlist.tracks.length >= MAX_TRACKS_PER_PLAYLIST) {
-    throw new Error(`Playlist toi da ${MAX_TRACKS_PER_PLAYLIST} bai.`);
+    throw new Error(`Playlist có tối đa ${MAX_TRACKS_PER_PLAYLIST} bài.`);
   }
 
   playlist.tracks.push({
@@ -134,11 +134,11 @@ function addTracksToPlaylist(userId, playlistNameOrKey, tracks) {
   const map = getUserPlaylistMap(userId);
   const key = map[playlistNameOrKey] ? playlistNameOrKey : playlistKey(playlistNameOrKey);
   const playlist = map[key];
-  if (!playlist) throw new Error('Khong tim thay playlist.');
+  if (!playlist) throw new Error('Không tìm thấy playlist.');
 
   const list = Array.isArray(tracks) ? tracks : [];
   if (playlist.tracks.length + list.length > MAX_TRACKS_PER_PLAYLIST) {
-    throw new Error(`Playlist toi da ${MAX_TRACKS_PER_PLAYLIST} bai.`);
+    throw new Error(`Playlist có tối đa ${MAX_TRACKS_PER_PLAYLIST} bài.`);
   }
 
   for (const track of list) {
@@ -159,11 +159,11 @@ function replacePlaylistTracks(userId, playlistNameOrKey, tracks) {
   const map = getUserPlaylistMap(userId);
   const key = map[playlistNameOrKey] ? playlistNameOrKey : playlistKey(playlistNameOrKey);
   const playlist = map[key];
-  if (!playlist) throw new Error('Khong tim thay playlist.');
+  if (!playlist) throw new Error('Không tìm thấy playlist.');
 
   const list = Array.isArray(tracks) ? tracks : [];
   if (list.length > MAX_TRACKS_PER_PLAYLIST) {
-    throw new Error(`Playlist toi da ${MAX_TRACKS_PER_PLAYLIST} bai.`);
+    throw new Error(`Playlist có tối đa ${MAX_TRACKS_PER_PLAYLIST} bài.`);
   }
 
   playlist.tracks = list.map((track) => ({
@@ -182,26 +182,14 @@ function removeTrackByIndex(userId, playlistNameOrKey, oneBasedIndex) {
   const map = getUserPlaylistMap(userId);
   const key = map[playlistNameOrKey] ? playlistNameOrKey : playlistKey(playlistNameOrKey);
   const playlist = map[key];
-  if (!playlist) throw new Error('Khong tim thay playlist.');
+  if (!playlist) throw new Error('Không tìm thấy playlist.');
 
   const index = Number(oneBasedIndex) - 1;
   if (!Number.isInteger(index) || index < 0 || index >= playlist.tracks.length) {
-    throw new Error('Index bai hat khong hop le.');
+    throw new Error('Vị trí bài hát không hợp lệ.');
   }
 
   const [removed] = playlist.tracks.splice(index, 1);
-  saveStore();
-  return removed;
-}
-
-function removeLastTrack(userId, playlistNameOrKey) {
-  const map = getUserPlaylistMap(userId);
-  const key = map[playlistNameOrKey] ? playlistNameOrKey : playlistKey(playlistNameOrKey);
-  const playlist = map[key];
-  if (!playlist) throw new Error('Khong tim thay playlist.');
-  if (playlist.tracks.length === 0) throw new Error('Playlist dang trong.');
-
-  const removed = playlist.tracks.pop();
   saveStore();
   return removed;
 }
@@ -218,7 +206,6 @@ module.exports = {
   listUserPlaylists,
   normalizePlaylistName,
   playlistKey,
-  removeLastTrack,
   removeTrackByIndex,
   replacePlaylistTracks,
   renamePlaylist,

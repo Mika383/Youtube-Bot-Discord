@@ -13,7 +13,7 @@ Discord music bot cho YouTube, ho tro queue, now playing panel, playlist theo us
 - Sau moi phan hoi interaction cua bot, neu guild dang co player/panel, Now Playing duoc gui lai o cuoi chat va panel cu dang duoc theo doi se bi xoa.
 - Phan hoi ephemeral cung kich hoat viec di chuyen panel cong khai. Khi bai tu chuyen ma khong co phan hoi, bot chi cap nhat panel moi nhat.
 - Playlist ca nhan theo tai khoan Discord (user khac khong sua duoc).
-- Playlist panel UI (ephemeral) de thao tac nhanh.
+- Mot lenh `/playlist` mo panel ephemeral de quan ly toan bo playlist ca nhan.
 - Import playlist YouTube vao playlist local.
 - Luu queue hien tai vao playlist local.
 - Lenh `/present` de render lai UI khi panel bi loi/mat.
@@ -80,7 +80,7 @@ npm start
   - URL co `list` khong bat dau bang `RD`: nap playlist YouTube vao queue.
   - YouTube Mix/Radio co `list=RD...`: chi phat video goc, khong nap danh sach tu sinh.
   - `infinite` chi hop le khi input duoc nhan dien la playlist YouTube.
-  - Playlist local da luu tiep tuc phat bang `/myplaylist play` hoac `/mpl play`.
+  - Playlist local da luu duoc phat tu panel `/playlist`.
 
 - `/skip`
   - Skip bai hien tai.
@@ -108,54 +108,28 @@ npm start
 
 Luu y: lenh thay doi phat nhac chi hoat dong khi ban o cung voice channel voi bot.
 
-### Playlist Create (`/createplaylist` va alias `/cpl`)
+### Playlist ca nhan
 
-- `/cpl create name:<name>`
-- `/cpl rename name:<old> new_name:<new>`
-- `/cpl delete name:<name>`
-- `/cpl import name:<local_name> url:<youtube_playlist_url>`
-
-### Playlist Use (`/myplaylist` va alias `/mpl`)
-
-- `/mpl panel`
-  - Mo UI panel playlist (ephemeral).
-
-- `/mpl list`
-  - Liet ke playlist cua ban.
-
-- `/mpl view name:<name>`
-  - Xem preview bai trong playlist.
-
-- `/mpl add name:<name> url:<youtube_url>`
-  - Them 1 bai vao playlist.
-
-- `/mpl remove name:<name> index:<n>`
-  - Xoa bai theo vi tri.
-
-- `/mpl play name:<name> [infinite:true|false]`
-  - Phat playlist local.
-
-- `/mpl savequeue name:<name> [mode:replace|append]`
-  - Luu bai dang phat + hang cho hien tai vao playlist local.
+- `/playlist`
+  - Mo panel quan ly playlist rieng tu (ephemeral).
+  - Khong can nho subcommand hoac alias.
 
 ## Playlist Panel UI
 
-Trong `/mpl panel`, ban co:
+Trong `/playlist`, ban co:
 
-- Select playlist
-- Buttons:
-  - Play
-  - Play Infinite
-  - Save Queue
-  - Add Current
-  - Remove Last
-  - Delete Playlist
-  - Refresh
-- Select menu de xoa bai theo vi tri bat ky
+- Chon playlist va xem danh sach bai theo tung trang.
+- Tao moi, doi ten va xoa playlist.
+- Import playlist YouTube hoac them mot video bang URL.
+- Phat playlist thuong hoac lap vo han.
+- Them bai dang phat vao playlist.
+- Xoa bai bang select menu; ho tro toan bo playlist qua nut chuyen trang.
+- Luu bai dang phat + hang cho theo che do Ghi de hoac Noi them sau buoc xac nhan.
 
 Luu y:
 - Panel la ephemeral, gan voi owner.
 - User khac khong the thao tac panel cua ban.
+- Panel het han se yeu cau mo lai bang `/playlist`, khong tu chon playlist khac.
 
 ## Shuffle va Infinite
 

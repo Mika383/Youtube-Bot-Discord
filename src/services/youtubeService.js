@@ -116,7 +116,7 @@ function classifyYoutubeAccessError(error) {
 
 function buildYoutubeAccessBlockedError(reason, retryAfterMs = YOUTUBE_ACCESS_COOLDOWN_MS) {
   const retryAfterSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
-  const error = new Error(`YouTube dang gioi han hoac yeu cau xac minh. Vui long thu lai sau ${retryAfterSeconds} giay.`);
+  const error = new Error(`YouTube đang giới hạn hoặc yêu cầu xác minh. Vui lòng thử lại sau ${retryAfterSeconds} giây.`);
   error.code = 'YOUTUBE_ACCESS_COOLDOWN';
   error.reason = reason;
   error.retryAfterSeconds = retryAfterSeconds;
@@ -233,7 +233,7 @@ function waitForReadable(stream, timeoutMs, getEndError) {
 
 function normalizePlayableUrl(input) {
   const raw = String(input || '').trim().replace(/^<|>$/g, '');
-  if (!raw) throw new Error('Invalid URL: empty input.');
+  if (!raw) throw new Error('URL không hợp lệ: nội dung đang trống.');
 
   if (ytdl.validateID(raw)) {
     return `https://www.youtube.com/watch?v=${raw}`;
@@ -264,12 +264,12 @@ function normalizePlayableUrl(input) {
     // handled below
   }
 
-  throw new Error('Invalid URL: only YouTube video links are supported.');
+  throw new Error('URL không hợp lệ: bot chỉ hỗ trợ liên kết video YouTube.');
 }
 
 function classifyPlayInput(input) {
   const raw = String(input || '').trim().replace(/^<|>$/g, '');
-  if (!raw) throw new Error('Thieu ten bai hat hoac URL cho /play.');
+  if (!raw) throw new Error('Thiếu tên bài hát hoặc URL cho `/play`.');
 
   const hasExplicitUrlScheme = /^https?:\/\//i.test(raw);
   const resemblesYoutubeUrl = /(?:youtube\.com|youtu\.be)/i.test(raw);
@@ -282,13 +282,13 @@ function classifyPlayInput(input) {
   try {
     parsed = new URL(candidate);
   } catch {
-    throw new Error('URL YouTube khong hop le.');
+    throw new Error('URL YouTube không hợp lệ.');
   }
 
   const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
   const supportedHosts = new Set(['youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be']);
   if (!supportedHosts.has(host)) {
-    throw new Error('Chi ho tro URL YouTube; hay nhap ten bai hat neu muon tim kiem.');
+    throw new Error('Bot chỉ hỗ trợ URL YouTube; hãy nhập tên bài hát nếu muốn tìm kiếm.');
   }
 
   const listId = parsed.searchParams.get('list');
@@ -551,7 +551,7 @@ async function createYoutubeAudioResource(url) {
     }
   }
 
-  const finalError = new Error('Khong the tao audio stream tu YouTube luc nay. Vui long thu lai sau.');
+  const finalError = new Error('Không thể tạo luồng âm thanh từ YouTube lúc này. Vui lòng thử lại sau.');
   finalError.code = 'AUDIO_STREAM_UNAVAILABLE';
   finalError.failures = failures;
   logger.error('All audio stream providers failed.', {
@@ -630,7 +630,7 @@ async function getVideoMetadata(url) {
 
 async function searchYoutubeVideo(query) {
   const q = String(query || '').trim();
-  if (!q) throw new Error('Tu khoa tim kiem dang trong.');
+  if (!q) throw new Error('Từ khóa tìm kiếm đang trống.');
   assertYoutubeAccessAvailable();
   logger.info('Searching YouTube video.', { query: q });
 
@@ -653,12 +653,12 @@ async function searchYoutubeVideo(query) {
 
   const item = result?.entries?.[0] || result;
   if (!item) {
-    throw new Error('Khong tim thay ket qua phu hop.');
+    throw new Error('Không tìm thấy kết quả phù hợp.');
   }
 
   const url = item.webpage_url || (item.id ? `https://www.youtube.com/watch?v=${item.id}` : null);
   if (!url) {
-    throw new Error('Khong lay duoc URL tu ket qua tim kiem.');
+    throw new Error('Không lấy được URL từ kết quả tìm kiếm.');
   }
 
   logger.info('YouTube search resolved a video.', {
@@ -702,7 +702,7 @@ function deriveSeedVideoIdFromListId(listId) {
 
 function parseYoutubePlaylistInput(playlistUrl) {
   const raw = String(playlistUrl || '').trim().replace(/^<|>$/g, '');
-  if (!raw) throw new Error('Thieu URL playlist YouTube.');
+  if (!raw) throw new Error('Thiếu URL playlist YouTube.');
 
   let candidate = raw;
   if (!/^https?:\/\//i.test(candidate) && /youtube\.com|youtu\.be/i.test(candidate)) {
@@ -714,12 +714,12 @@ function parseYoutubePlaylistInput(playlistUrl) {
     const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
     const supportedHosts = new Set(['youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be']);
     if (!supportedHosts.has(host)) {
-      throw new Error('Chi ho tro link playlist YouTube.');
+      throw new Error('Bot chỉ hỗ trợ liên kết playlist YouTube.');
     }
 
     const listId = parsed.searchParams.get('list');
     if (!listId) {
-      throw new Error('Link nay khong chua ma playlist YouTube.');
+      throw new Error('Liên kết này không chứa mã playlist YouTube.');
     }
 
     const rawVideoId = host === 'youtu.be'
@@ -738,7 +738,7 @@ function parseYoutubePlaylistInput(playlistUrl) {
     if (error instanceof Error && error.message !== 'Invalid URL') {
       throw error;
     }
-    throw new Error('URL playlist YouTube khong hop le.');
+    throw new Error('URL playlist YouTube không hợp lệ.');
   }
 }
 
@@ -783,16 +783,16 @@ async function fetchYoutubePlaylistTracksWithYtDlp(canonical) {
 
   const tracks = mapPlaylistEntries(Array.isArray(json?.entries) ? json.entries : []);
   if (tracks.length === 0) {
-    throw new Error('Khong lay duoc bai hat tu playlist YouTube nay.');
+    throw new Error('Không lấy được bài hát từ playlist YouTube này.');
   }
 
   logger.info('yt-dlp playlist fetch succeeded.', {
     canonical,
-    title: json?.title || 'YouTube Playlist',
+    title: json?.title || 'Playlist YouTube',
     trackCount: tracks.length,
   });
   return {
-    title: json?.title || 'YouTube Playlist',
+    title: json?.title || 'Playlist YouTube',
     tracks,
   };
 }
@@ -804,23 +804,23 @@ async function fetchYoutubePlaylistTracksWithPlayDl(canonical) {
   const tracks = mapPlaylistEntries(Array.isArray(videos) ? videos : []);
 
   if (tracks.length === 0) {
-    throw new Error('Khong lay duoc bai hat tu playlist YouTube nay.');
+    throw new Error('Không lấy được bài hát từ playlist YouTube này.');
   }
 
   logger.info('play-dl playlist fetch succeeded.', {
     canonical,
-    title: playlist?.title || 'YouTube Playlist',
+    title: playlist?.title || 'Playlist YouTube',
     trackCount: tracks.length,
   });
   return {
-    title: playlist?.title || 'YouTube Playlist',
+    title: playlist?.title || 'Playlist YouTube',
     tracks,
   };
 }
 
 async function buildSeedVideoFallbackPlaylist(seedVideoId) {
   const url = `https://www.youtube.com/watch?v=${seedVideoId}`;
-  const notice = 'Playlist nay la Mix/Radio cua YouTube, bot khong the lay toan bo danh sach nen da chuyen sang bai goc.';
+  const notice = 'Playlist này là Mix/Radio của YouTube, bot không thể lấy toàn bộ danh sách nên đã chuyển sang bài gốc.';
 
   try {
     const meta = await getVideoMetadata(url);
@@ -854,9 +854,9 @@ async function buildSeedVideoFallbackPlaylist(seedVideoId) {
 
 function buildPlaylistFetchError(error, sawUnviewableError = false) {
   if (sawUnviewableError || isUnviewablePlaylistError(error)) {
-    return new Error('Playlist YouTube nay khong ho tro trich xuat day du (thuong la Mix/Radio). Hay gui link video hoac playlist thuong.');
+    return new Error('Playlist YouTube này không hỗ trợ trích xuất đầy đủ (thường là Mix/Radio). Hãy gửi liên kết video hoặc playlist thường.');
   }
-  return new Error('Khong lay duoc bai hat tu playlist YouTube nay.');
+  return new Error('Không lấy được bài hát từ playlist YouTube này.');
 }
 
 async function fetchYoutubePlaylistTracks(playlistUrl) {

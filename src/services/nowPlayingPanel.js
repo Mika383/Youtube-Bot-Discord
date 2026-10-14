@@ -62,8 +62,8 @@ function buildNowPlayingEmbed(guildState) {
       .setDescription('Chưa có bài nào đang phát.')
       .addFields(
         { name: `${icons.queue} Hàng chờ`, value: `${guildState.tracks.length} bài`, inline: true },
-        { name: `${icons.shuffle} Shuffle`, value: shuffleEnabled ? 'BẬT' : 'TẮT', inline: true },
-        { name: `${icons.infinite} Infinite`, value: infiniteEnabled ? 'BẬT' : 'TẮT', inline: true },
+        { name: `${icons.shuffle} Trộn bài`, value: shuffleEnabled ? 'BẬT' : 'TẮT', inline: true },
+        { name: `${icons.infinite} Lặp vô hạn`, value: infiniteEnabled ? 'BẬT' : 'TẮT', inline: true },
       )
       .setFooter({ text: 'Dùng /play để bắt đầu một phiên nghe nhạc.' });
   }
@@ -76,11 +76,11 @@ function buildNowPlayingEmbed(guildState) {
   embed
     .setDescription(`**${truncateText(guildState.current.title, 300)}**`)
     .addFields(
-      { name: `${icons.duration} Thời lượng`, value: durationSec ? formatDuration(durationSec) : 'Live', inline: true },
+      { name: `${icons.duration} Thời lượng`, value: durationSec ? formatDuration(durationSec) : 'Trực tiếp', inline: true },
       { name: 'Trạng thái', value: playbackStatus, inline: true },
       { name: `${icons.queue} Hàng chờ`, value: `${guildState.tracks.length} bài`, inline: true },
-      { name: `${icons.shuffle} Shuffle`, value: shuffleEnabled ? 'BẬT' : 'TẮT', inline: true },
-      { name: `${icons.infinite} Infinite`, value: infiniteEnabled ? 'BẬT' : 'TẮT', inline: true },
+      { name: `${icons.shuffle} Trộn bài`, value: shuffleEnabled ? 'BẬT' : 'TẮT', inline: true },
+      { name: `${icons.infinite} Lặp vô hạn`, value: infiniteEnabled ? 'BẬT' : 'TẮT', inline: true },
       {
         name: `${icons.requester} Yêu cầu bởi`,
         value: truncateText(guildState.current.requestedBy || 'Không rõ', 100),

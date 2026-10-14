@@ -39,7 +39,7 @@ Discord interaction
 Ranh gioi module:
 
 - `src/index.js`: nap env, tao Discord client, wire cac service, dang ky slash command va bat dau bot.
-- `src/commands/registerCommands.js`: dinh nghia 13 slash command, gom cac alias `cpl` va `mpl`.
+- `src/commands/registerCommands.js`: dinh nghia 10 slash command; playlist ca nhan chi dung mot lenh `/playlist`.
 - `src/handlers/interactionHandler.js`: dieu phoi toan bo slash command, button, select menu va phan hoi loi.
 - `src/services/playerService.js`: state player theo guild, voice connection, queue, history, loop, shuffle va idle disconnect.
 - `src/services/youtubeService.js`: chuan hoa URL, metadata, search, playlist extraction va audio stream fallback.
@@ -66,10 +66,9 @@ Khong co DI framework. Dependency duoc tao va truyen thu cong tu `src/index.js`.
 Command goc:
 
 - Music: `/play`, `/skip`, `/stop`, `/queue`, `/shuffle`, `/leave`, `/kill`, `/present`, `/ringo`.
-- Playlist creation: `/createplaylist` va alias `/cpl`.
-- Playlist use: `/myplaylist` va alias `/mpl`.
+- Playlist ca nhan: `/playlist` mo panel ephemeral quan ly day du.
 
-`/play input:<text-or-url> [infinite]` tu dong phan loai: text thanh search, URL video thanh mot track, `list` khong bat dau bang `RD` thanh playlist, va Mix/Radio `RD...` thanh video goc. Playlist local phat qua `/myplaylist play` hoac `/mpl play`. Audio stream thu lan luot `yt-dlp -> play-dl -> ytdl-core`; metadata thu `yt-dlp -> ytdl-core`; playlist thu `yt-dlp -> play-dl`, sau do co fallback ve seed video cho YouTube Mix/Radio. Voice negotiation va YouTube resolution cua `/play` chay song song de giam thoi gian bat dau.
+`/play input:<text-or-url> [infinite]` tu dong phan loai: text thanh search, URL video thanh mot track, `list` khong bat dau bang `RD` thanh playlist, va Mix/Radio `RD...` thanh video goc. Playlist local phat tu panel `/playlist`. Audio stream thu lan luot `yt-dlp -> play-dl -> ytdl-core`; metadata thu `yt-dlp -> ytdl-core`; playlist thu `yt-dlp -> play-dl`, sau do co fallback ve seed video cho YouTube Mix/Radio. Voice negotiation va YouTube resolution cua `/play` chay song song de giam thoi gian bat dau.
 
 UI chi nam trong Discord:
 
@@ -77,8 +76,10 @@ UI chi nam trong Discord:
 - 11 custom emoji dang dung ID cua mot Discord server cu the. Asset goc va ban upload 128x128 nam trong `assets/discord-emojis/`; khi bot chuyen server hoac emoji bi tao lai, mapping ID phai duoc cap nhat.
 - Sau moi interaction response, neu guild dang co player hoac panel, Now Playing duoc gui lai xuong cuoi chat; panel cu dang duoc theo doi bi xoa hoac vo hieu hoa. Phan hoi ephemeral van kich hoat relocation cong khai; chuyen bai tu dong khong co response chi update panel moi nhat.
 - Queue embed co pagination 10 bai/trang.
-- Playlist panel ephemeral theo owner, select playlist va cac nut thao tac.
-- Track removal select chi hien 25 bai dau trong playlist; slash command van co the xoa cac vi tri lon hon.
+- Playlist panel ephemeral theo owner, gom tao/doi ten/import/them URL/phat/luu queue/xoa playlist.
+- Danh sach bai va track-removal select phan trang 10 bai, ho tro toan bo playlist toi da 200 bai.
+- Luu hang cho bat buoc chon Ghi de hoac Noi them trong man hinh xac nhan.
+- State panel co TTL 30 phut; panel cu hoac state mat sau restart bi tu choi va yeu cau mo lai `/playlist`.
 
 ## Data Storage
 
@@ -186,9 +187,6 @@ Bien tuy chon:
 - Log rotation phu thuoc cau hinh `pm2-logrotate` tren server, khong duoc app tu quan ly.
 - Logging chua co correlation ID hoac redaction theo ten field tong quat.
 - Bo test hien chi co 2 file/4 test case, tap trung vao Now Playing controls va hai che do Shuffle/Infinite.
-- Track-removal select trong playlist panel chi hien 25 bai dau; slash command van xoa duoc vi tri lon hon.
-- Selected playlist cua panel chi nam trong RAM voi TTL 30 phut. Sau khi state het han hoac process restart, action tren panel cu fallback ve playlist dau tien; cac action mutation khong confirm co nguy co tac dong nham playlist.
-- `Save Queue` tren panel va `/myplaylist savequeue` ghi/de toan bo playlist ngay, chua co buoc xac nhan manual save.
 - `/stop`, `/leave` va `/kill` van dung chung clear/disconnect core, chi khac y nghia va message nguoi dung.
 - External metadata/search/playlist calls chua co timeout tong the; playlist lon co the duoc nap het vao RAM truoc khi cat con 200 bai de luu.
 - Guild player state khong duoc xoa khoi `Map` sau disconnect; bot tham gia rat nhieu guild theo thoi gian co the giu state rong lau dai.
