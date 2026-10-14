@@ -4,12 +4,14 @@ Discord music bot cho YouTube, ho tro queue, now playing panel, playlist theo us
 
 ## Features
 
-- Phat nhac YouTube theo URL, theo ten tim kiem, hoac playlist.
-- Now Playing UI gon, luon duoc dua xuong cuoi chat sau khi `/play`:
+- Phat nhac YouTube bang mot lenh `/play`, tu dong nhan dien ten bai, URL video hoac URL playlist.
+- Now Playing UI gon voi cac nut dieu khien:
   - `⏮️` Previous, `⏸️/▶️` Pause/Resume, `⏭️` Skip, `⏹️` Stop
   - `📜` Queue
   - `🔀` Shuffle va `🔁` Infinite la hai che do doc lap
   - Toggle OFF mau xam, ON mau xanh la; trang thai cung duoc ghi trong embed
+- Sau moi phan hoi interaction cua bot, neu guild dang co player/panel, Now Playing duoc gui lai o cuoi chat va panel cu dang duoc theo doi se bi xoa.
+- Phan hoi ephemeral cung kich hoat viec di chuyen panel cong khai. Khi bai tu chuyen ma khong co phan hoi, bot chi cap nhat panel moi nhat.
 - Playlist ca nhan theo tai khoan Discord (user khac khong sua duoc).
 - Playlist panel UI (ephemeral) de thao tac nhanh.
 - Import playlist YouTube vao playlist local.
@@ -52,11 +54,15 @@ npm install
 DISCORD_TOKEN=your_discord_bot_token_here
 DISCORD_CLIENT_ID=your_discord_client_id_here
 DISCORD_GUILD_ID=your_test_server_id_here
+LOG_LEVEL=info
+YOUTUBE_COOKIES_FILE=
 ```
 
 Ghi chu:
 - `DISCORD_GUILD_ID` khuyen nghi cho dev: slash commands update nhanh gan nhu ngay lap tuc.
 - Neu bo trong `DISCORD_GUILD_ID`, bot dang ky global commands (co the tre).
+- `YOUTUBE_COOKIES_FILE` la tuy chon. Khi khai bao, gia tri phai la duong dan tuyet doi den file cookie Netscape doc duoc boi user chay bot.
+- Khong dat file cookie trong repository. Tren Linux, nen dat quyen file la `600` va quyen thu muc la `700`.
 
 3. Chay bot:
 
@@ -68,17 +74,13 @@ npm start
 
 ### Music
 
-- `/play url input:<youtube_url>`
-  - Them bai YouTube vao queue.
-
-- `/play search input:<keyword>`
-  - Tim bai dau tien tren YouTube theo keyword va them vao queue.
-
-- `/play myplaylist name:<playlist_name> [infinite:true|false]`
-  - Play ngay playlist local da luu cua ban.
-
-- `/play playlist url:<youtube_playlist_url> [infinite:true|false]`
-  - Nap playlist YouTube URL vao queue va phat.
+- `/play input:<ten_bai_hoac_youtube_url> [infinite:true|false]`
+  - Text thuong: tim bai dau tien tren YouTube va them vao queue.
+  - URL video: them mot bai vao queue.
+  - URL co `list` khong bat dau bang `RD`: nap playlist YouTube vao queue.
+  - YouTube Mix/Radio co `list=RD...`: chi phat video goc, khong nap danh sach tu sinh.
+  - `infinite` chi hop le khi input duoc nhan dien la playlist YouTube.
+  - Playlist local da luu tiep tuc phat bang `/myplaylist play` hoac `/mpl play`.
 
 - `/skip`
   - Skip bai hien tai.
@@ -214,7 +216,15 @@ src/
 - Pipeline hien uu tien WebM/Opus truc tiep de tranh encode lai, sau do fallback qua `play-dl` va `ytdl-core`.
 - Bot chi danh dau provider san sang sau khi nhan duoc audio data dau tien; exit code va stderr cua `yt-dlp` duoc ghi log co gioi han.
 
-### 5) Panel bi mat hoac loi UI
+### 5) YouTube tra ve HTTP 429 hoac yeu cau dang nhap
+
+- Tao file cookie Netscape ben ngoai repository, vi du `/home/duyhai/.config/ahso/youtube-cookies.txt`.
+- Them vao `.env`: `YOUTUBE_COOKIES_FILE=/home/duyhai/.config/ahso/youtube-cookies.txt`.
+- Restart bang `pm2 restart ahso --update-env`.
+- Khi phat hien HTTP 429 hoac `LOGIN_REQUIRED`, bot tam dung cac yeu cau YouTube moi trong 5 phut de tranh retry lien tuc.
+- Cookie chi duoc truyen cho `yt-dlp`; bot khong ghi noi dung hoac duong dan cookie vao log.
+
+### 6) Panel bi mat hoac loi UI
 
 - Dung `/present` de render lai panel.
 
@@ -248,6 +258,8 @@ Bot xu ly `SIGINT`/`SIGTERM`, dong voice va audio stream truoc khi PM2 restart.
 ## Security Notes
 
 - Khong commit `.env`.
+- Khong commit, chia se hoac in noi dung file cookie YouTube ra log.
+- Nen dung tai khoan Google rieng, khong co du lieu quan trong, va thu hoi phien dang nhap neu nghi ngo cookie bi lo.
 - Neu token lo ra ngoai, rotate ngay trong Discord Developer Portal.
 - `.env.example` chi de placeholder, khong de token that.
 

@@ -45,10 +45,8 @@ function buildRingoHelpEmbed() {
       {
         name: 'Music',
         value: [
-          '`/play url input:<youtube_url>`: Them bai vao queue va phat.',
-          '`/play search input:<ten bai>`: Tim theo ten roi phat.',
-          '`/play myplaylist name:<ten> [infinite]`: Phat ngay playlist da luu.',
-          '`/play playlist url:<youtube_playlist_url> [infinite]`: Phat playlist YouTube.',
+          '`/play input:<ten hoac URL> [infinite]`: Tu dong tim bai, phat video hoac playlist YouTube.',
+          '`/myplaylist play name:<ten> [infinite]`: Phat playlist da luu cua ban.',
           '`/skip`: Bo qua bai hien tai.',
           '`/shuffle`: Bật hoặc tắt chế độ Shuffle.',
           '`/stop`: Dung phat, xoa queue, ngat voice.',
@@ -192,6 +190,18 @@ function createInteractionHandler({
       durationSec: track.durationSec || 0,
       thumbnail: track.thumbnail || null,
     }));
+  }
+
+  function hasPlayerPanelOrSession(guildState) {
+    return Boolean(
+      guildState
+      && (
+        guildState.panelMessageId
+        || guildState.current
+        || guildState.connection
+        || guildState.tracks.length > 0
+      )
+    );
   }
 
   async function handleCreatePlaylistCommands(interaction) {
@@ -367,7 +377,6 @@ function createInteractionHandler({
       await interaction.editReply({
         content: `Đã nạp playlist **${truncateText(playlist.name, 100)}** (${playlist.tracks.length} bài). Infinite: **${infinite ? 'BẬT' : 'TẮT'}**.`,
       });
-      await panelService.relocateNowPlayingPanel(guildState, interaction.channelId);
       return;
     }
 
@@ -405,7 +414,7 @@ function createInteractionHandler({
     }
   }
 
-  async function handle(interaction) {
+  async function handleCore(interaction) {
     logger.info('Interaction received.', buildInteractionMeta(interaction));
 
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith(`${ids.PL_SELECT}:`)) {
@@ -677,7 +686,6 @@ function createInteractionHandler({
             );
             playlistPanelService.setState(interaction.message.id, ownerId, panel.selectedKey);
             await interaction.editReply(panel.payload);
-            await panelService.relocateNowPlayingPanel(guildState, interaction.channelId);
             return;
           }
 
@@ -735,10 +743,11 @@ function createInteractionHandler({
     try {
       if (interaction.commandName === 'play') {
         await interaction.deferReply();
-        let sub = interaction.options.getSubcommand(false);
-        const legacyInput = interaction.options.getString('url', false) || interaction.options.getString('input', false);
-        if (!sub && legacyInput) {
-          sub = 'url';
+        const input = interaction.options.getString('input', true);
+        const infinite = interaction.options.getBoolean('infinite') || false;
+        const resolvedInput = youtubeService.classifyPlayInput(input);
+        if (infinite && resolvedInput.type !== 'playlist') {
+          throw new Error('Tuy chon infinite chi dung cho URL playlist YouTube.');
         }
 
         // Voice negotiation and YouTube resolution are independent. Start both as
@@ -754,46 +763,16 @@ function createInteractionHandler({
         };
 
         logger.info('Handling /play command.', buildInteractionMeta(interaction, {
-          resolvedSubcommand: sub,
-          legacyInput: legacyInput || null,
+          inputType: resolvedInput.type,
+          infinite,
         }));
 
-        if (sub === 'myplaylist') {
-          const name = interaction.options.getString('name', true);
-          const infinite = interaction.options.getBoolean('infinite') || false;
-          const playlist = playlistStore.getPlaylistByName(interaction.user.id, name);
-          if (!playlist) throw new Error('Khong tim thay playlist cua ban.');
-          if (playlist.tracks.length === 0) throw new Error('Playlist dang trong.');
-
-          logger.info('Queueing saved playlist from /play myplaylist.', buildInteractionMeta(interaction, {
-            playlistName: playlist.name,
-            trackCount: playlist.tracks.length,
+        if (resolvedInput.type === 'playlist') {
+          logger.info('Resolving playlist from unified /play input.', buildInteractionMeta(interaction, {
+            listId: resolvedInput.listId,
             infinite,
           }));
-
-          await requireConnection();
-          playerService.enqueuePlaylistToGuildWithOptions(guildState, playlist, interaction.user.username, { shuffle: false });
-          playerService.configurePlaylistLoop(guildState, playlist, interaction.user.username, { infinite, shuffle: false });
-
-          if (!guildState.current) {
-            await playerService.playNext(interaction, guildState);
-          }
-
-          await interaction.editReply({
-            content: `Đã nạp playlist **${truncateText(playlist.name, 100)}** (${playlist.tracks.length} bài). Infinite: **${infinite ? 'BẬT' : 'TẮT'}**.`,
-          });
-          await panelService.relocateNowPlayingPanel(guildState, interaction.channelId);
-          return;
-        }
-
-        if (sub === 'playlist') {
-          const inputUrl = interaction.options.getString('url', true);
-          const infinite = interaction.options.getBoolean('infinite') || false;
-          logger.info('Resolving YouTube playlist for /play playlist.', buildInteractionMeta(interaction, {
-            inputUrl,
-            infinite,
-          }));
-          const ytPlaylist = await youtubeService.fetchYoutubePlaylistTracks(inputUrl);
+          const ytPlaylist = await youtubeService.fetchYoutubePlaylistTracks(resolvedInput.url);
           if (!ytPlaylist || ytPlaylist.tracks.length === 0) {
             throw new Error('Playlist YouTube khong co bai hop le de phat.');
           }
@@ -814,28 +793,25 @@ function createInteractionHandler({
           await interaction.editReply({
             content: `Đã nạp YouTube playlist **${truncateText(virtualPlaylist.name, 100)}** (${virtualPlaylist.tracks.length} bài). Infinite: **${infinite ? 'BẬT' : 'TẮT'}**.${ytPlaylist.notice ? `\nLưu ý: ${truncateText(ytPlaylist.notice, 500)}` : ''}`,
           });
-          await panelService.relocateNowPlayingPanel(guildState, interaction.channelId);
           return;
         }
 
         let queued;
-        if (sub === 'url') {
-          const rawUrl = interaction.options.getString('input', false) || legacyInput;
-          if (!rawUrl) throw new Error('Thieu URL dau vao cho /play.');
-          logger.info('Resolving /play url input.', buildInteractionMeta(interaction, { rawUrl }));
-          const url = youtubeService.normalizePlayableUrl(rawUrl);
-          const meta = await youtubeService.getVideoMetadata(url);
+        if (resolvedInput.type === 'video') {
+          logger.info('Resolving video from unified /play input.', buildInteractionMeta(interaction));
+          const meta = await youtubeService.getVideoMetadata(resolvedInput.url);
           queued = {
-            url,
+            url: resolvedInput.url,
             title: meta.title,
             durationSec: meta.durationSec,
             thumbnail: meta.thumbnail,
             requestedBy: interaction.user.username,
           };
-        } else if (sub === 'search') {
-          const query = interaction.options.getString('input', true);
-          logger.info('Resolving /play search input.', buildInteractionMeta(interaction, { query }));
-          const found = await youtubeService.searchYoutubeVideo(query);
+        } else {
+          logger.info('Resolving search from unified /play input.', buildInteractionMeta(interaction, {
+            query: resolvedInput.query,
+          }));
+          const found = await youtubeService.searchYoutubeVideo(resolvedInput.query);
           queued = {
             url: found.url,
             title: found.title,
@@ -843,8 +819,6 @@ function createInteractionHandler({
             thumbnail: found.thumbnail,
             requestedBy: interaction.user.username,
           };
-        } else {
-          throw new Error('Lenh /play chua duoc dong bo. Hay reload Discord (Ctrl+R) va dung /play url, /play search, hoac /play myplaylist.');
         }
 
         await requireConnection();
@@ -860,7 +834,6 @@ function createInteractionHandler({
         }
 
         await interaction.editReply({ content: `Đã thêm vào hàng chờ: ${truncateText(queued.title, 300)}` });
-        await panelService.relocateNowPlayingPanel(guildState, interaction.channelId);
         return;
       }
 
@@ -915,8 +888,10 @@ function createInteractionHandler({
 
       if (interaction.commandName === 'present') {
         logger.info('Handling /present command.', buildInteractionMeta(interaction));
+        if (!hasPlayerPanelOrSession(guildState)) {
+          throw new Error('Chua co player de dua xuong vi tri moi nhat.');
+        }
         await interaction.deferReply({ ephemeral: true });
-        await panelService.relocateNowPlayingPanel(guildState, interaction.channelId);
         await interaction.editReply({ content: 'Đã đưa bảng điều khiển xuống vị trí mới nhất.' });
         return;
       }
@@ -956,6 +931,27 @@ function createInteractionHandler({
       } else {
         await interaction.reply({ content: message, ephemeral: true }).catch(() => null);
       }
+    }
+  }
+
+  async function relocatePlayerAfterResponse(interaction) {
+    if (!interaction?.guildId || (!interaction.replied && !interaction.deferred)) return;
+
+    const guildState = playerService.queue.get(interaction.guildId);
+    if (!hasPlayerPanelOrSession(guildState)) return;
+
+    await panelService.relocateNowPlayingPanel(guildState, interaction.channelId);
+  }
+
+  async function handle(interaction) {
+    try {
+      await handleCore(interaction);
+    } finally {
+      await relocatePlayerAfterResponse(interaction).catch((error) => {
+        logger.error('Failed to relocate player panel after interaction response.', buildInteractionMeta(interaction, {
+          error,
+        }));
+      });
     }
   }
 
